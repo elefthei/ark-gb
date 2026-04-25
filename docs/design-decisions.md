@@ -2971,6 +2971,163 @@ stages are separate, each a future ADR if pursued:
 
 ---
 
+## ADR-019: Phase I — bench-driven perf iteration on the arkworks port
+
+**Status:** Accepted
+**Date:** 2026-04-25
+
+### Context
+
+Phase H landed the ark-gb Criterion suite (`benches/groebner.rs`) and
+correctness regression (`tests/groebner_correctness.rs`,
+`tests/groebner_sage.rs`). Phase I was a bench-driven optimization
+pass, scoped to the arkworks-port-specific cost model:
+
+1. `Fr` (BLS12-381 scalar, 4×64-bit Montgomery) is ~50× more
+   expensive per op than upstream rustgb's `Z/32003` (single-word
+   Barrett).
+2. `Fr::inverse()` is the most expensive scalar op and lands on the
+   hot path through `Poly::monic` and `validate::build_sbasis`.
+3. `MonoOrder::Elim` (added in Phase D) uses a per-byte branching
+   `cmp` instead of `degrevlex`'s word-wise compare.
+
+### What we did (per-iteration)
+
+#### I0 — tooling
+
+- Added `bench-baseline.sh` wrapper that pins
+  `RUSTFLAGS="-C target-cpu=native"`, captures `rustc -V` /
+  CPU-flags / git head into `target/criterion/.baselines/<name>.txt`
+  for repro provenance, and dispatches `cargo bench --bench groebner
+  --save-baseline <name>`.
+- Verified the AVX2 SEV-sweep path in `src/simd.rs`
+  (`#[cfg(target_feature = "avx2")]`) is reachable: by default rustc
+  on x86_64-unknown-linux-gnu has `avx2: false`. `.cargo/config.toml`
+  already pins `target-cpu=native` for repo-local builds, so the
+  default `cargo bench` picks up the AVX2 path; `bench-baseline.sh`
+  ensures it stays on for any contributor invoking the script
+  directly.
+
+#### I1 — profile
+
+- `perf record -F 999 -g --call-graph dwarf,32768` against
+  `examples/perf_cyclic5` with `ARK_GB_THREADS=1`, 200 reps, on
+  Intel Xeon 8370C.
+
+Top-10 self-time on Cyclic-5 / DegRevLex:
+
+| Rank | Self % | Function |
+|------|--------|----------|
+| 1 | 26.86 % | `Poly::sub_mm_mult_qq_consuming` |
+| 2 | 24.85 % | `MontBackend::mul_assign` |
+| 3 |  9.98 % | `KBucket::leading` |
+| 4 |  6.97 % | `bba::reduce_lobject_geobucket` |
+| 5 |  6.16 % | `Monomial::cmp` (DegRevLex) |
+| 6 |  4.09 % | `MontBackend::inverse` |
+| 7 |  2.01 % | `gm::enterpairs` |
+| 8 |  1.81 % | `Poly::add` |
+| 9 |  1.47 % | libc `free` |
+| 10 |  1.47 % | `KBucket::minus_m_mult_p` |
+
+Key takeaway: **Fr::inverse() at 4 % bounds the I2 ceiling below
+the 3 % adoption threshold once you net out noise**, so I2 was
+deferred. The dominant cost (~52 %) is poly merge + Fr mul inside
+`sub_mul_term`, which the upstream ADRs 015/017/018 already address
+to within ~2× of Singular's ring-specialised path.
+
+#### I3 — coprime-LM fast-path in `validate::is_groebner_basis` ✅
+
+Buchberger's First Criterion (the "product" / "coprime LM"
+criterion): if `gcd(LM(g_i), LM(g_j)) == 1` then `S(g_i, g_j)`
+reduces to 0 modulo `{g_i, g_j}`. Detect coprimality in O(1) via
+the cached short exponent vector — with `nvars ≤ 31` each variable
+owns a unique SEV bit, so `(sev_i & sev_j) == 0` is exactly "no
+shared variable" = coprime LMs. Sound for validation independent
+of any ordering or reducer choice.
+
+Bench impact (criterion `--quick`, `--baseline before-i1`,
+`RUSTFLAGS=-C target-cpu=native`, x86_64 8370C, 187 tests pass):
+
+```
+gb_validate_katsura/3:  48.9 µs ->  20.4 µs  (-58%)
+gb_validate_katsura/4: 429.9 µs -> 247.6 µs  (-43%)
+gb_validate_katsura/5:  13.99 ms ->  2.51 ms (-82%)
+gb_validate_cyclic/4:  149.3 µs ->  69.3 µs  (-53%)
+gb_validate_cyclic/5:   13.90 ms ->  7.48 ms (-46%)
+```
+
+Compute_gb benches do not exercise `is_groebner_basis`, so any
+deltas there are quick-mode noise (floor variance is 5–15 %).
+
+#### I2 — batch Fr::inverse in `Poly::monic_batch` ❌ (deferred)
+
+I1 placed `Fr::inverse` at 4 % of total. Upper bound on win is
+≤4 % (assuming free batched inversion), well below the 3 %
+adoption threshold once `--quick` noise is netted out. Deferred.
+
+#### I4 — word-wise `Elim::cmp` for `split ∈ {0, nvars}` ❌ (rejected, doesn't apply)
+
+`benches/groebner_shared.rs::elim_ring(n)` sets `split = n / 2`,
+which is the non-trivial block case. The `split == 0`
+(degenerates-to-grevlex) and `split == nvars` (degenerates-to-lex)
+corner cases are not in the bench matrix and are not interesting
+in production usage of `Elim`. Rejected: opens API surface for no
+measurable bench gain.
+
+#### I5 — `linked_list_poly` backend A/B ❌ (rejected on hot benches)
+
+```
+                  Vec(default)   List      Δ
+gb_katsura_grevlex/5     2.84 ms   6.07 ms  +114%  ✗
+gb_katsura_elim/5        3.99 ms   3.29 ms  -18%   ✓
+gb_cyclic_grevlex/5      4.17 ms   6.92 ms  +66%   ✗
+gb_cyclic_elim/5        11.75 ms  38.82 ms  +230%  ✗
+gb_validate_katsura/5    2.59 ms   2.45 ms  -5%    ≈
+gb_validate_cyclic/5     8.89 ms   6.10 ms  -31%   ✓
+```
+
+Vec wins decisively on the dominant Cyclic / DegRevLex benches.
+List wins on Katsura/Elim and Validate-cyclic. Default stays Vec
+(matches ADR-014's original choice). The List feature stays as an
+A/B knob for users with elim-heavy or validate-heavy workloads.
+
+#### I6 — LSet bitset (ADR-012) ❌ (skipped, not profile-justified)
+
+L-set self-time was below the 1 % cutoff in the I1 profile (no
+`lset` symbol in the top 12). ADR-012 stays deferred per its
+gating rule.
+
+### Decision
+
+Adopt **I3**. Reject **I2, I4, I5, I6** for the reasons above. I0
+tooling stays (no perf claim attached, just repro infrastructure).
+
+### What's next
+
+Future Phase J candidates, ordered by I1 self-time:
+
+1. `sub_mul_term` two-pointer merge — the `m.mul(&q_m[j], ring)`
+   call hoisted in the Greater branch is recomputed when `j`
+   doesn't advance. Lifting that across iterations is a small
+   localised optimization that may pick up 1-3 % on hot benches.
+2. Geobucket `leading` (ADR-002) — 10 % self-time. Already heavily
+   optimized upstream; further wins likely require restructuring.
+3. Allocator churn (~3 % combined `malloc` + `free`) —
+   ADR-016-style bumpalloc for `poly_vec` allocations.
+
+None of these are blockers for embedding ark-gb into zippel.
+
+### References
+
+- I0 commit: `e2d2571` — `perf(i0): bench-baseline.sh + reproducible bench docs`.
+- I3 commit: `c923d24` — `perf(i3): coprime-LM fast-path in validate::is_groebner_basis`.
+- I1 perf data: `/tmp/cyc5.perf` (1493 samples, dwarf-32k stacks).
+- ADR-002 (geobucket), ADR-008 (heap reducer), ADR-014 (poly backend
+  default), ADR-015 (destructive list-splice), ADR-018 (mul overflow
+  elision) — all prerequisites whose work this iteration assumed.
+
+---
+
 ## How to add a new ADR
 
 1. Pick the next number. Don't reuse retired numbers.
