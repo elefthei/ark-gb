@@ -143,22 +143,39 @@ pub fn is_groebner_basis<F: Field + Copy + Send + Sync + 'static>(
     // We re-fetch leading monomials via the SBasis's poly() rather
     // than the original `gb` slice, because build_sbasis re-monics
     // the inputs.
+    //
+    // Buchberger's First Criterion (a.k.a. the "product" /
+    // "coprime LM" criterion): if `gcd(LM(g_i), LM(g_j)) == 1` then
+    // `S(g_i, g_j)` reduces to 0 modulo `{g_i, g_j}` and a fortiori
+    // modulo `G`. We detect coprimality in O(1) via the cached short
+    // exponent vector — with `nvars <= 31` each variable owns a
+    // unique SEV bit (see Monomial::div, line 347), so
+    // `(sev_i & sev_j) == 0` is exactly "no shared variable" =
+    // coprime LMs. This is sound for validation (it is one of
+    // Buchberger's two original criteria, proven independent of any
+    // ordering or reducer choice) and is the dominant cost saver on
+    // sparse ideals like Cyclic-N.
     let n = s_basis.len();
     for i in 0..n {
         if s_basis.is_redundant(i) {
             continue;
         }
+        let s_i = s_basis.poly(i);
+        let lm_i = s_i.leading().expect("non-zero basis element").1;
+        let sev_i = lm_i.sev();
         for j in (i + 1)..n {
             if s_basis.is_redundant(j) {
                 continue;
             }
-            let s_i = s_basis.poly(i);
             let s_j = s_basis.poly(j);
+            let lm_j = s_j.leading().expect("non-zero basis element").1;
+            // Coprime-LM fast-path: skip the whole reduction.
+            if (sev_i & lm_j.sev()) == 0 {
+                continue;
+            }
             // Build a placeholder Pair carrying the lcm of the two
             // leading monomials; sugar/arrival are not consulted by
             // the reduction path.
-            let lm_i = s_i.leading().expect("non-zero basis element").1;
-            let lm_j = s_j.leading().expect("non-zero basis element").1;
             let lcm = lm_i.lcm(lm_j, ring);
             let pair = Pair::new(i as u32, j as u32, lcm, 0, 0);
             let mut lobj = match LObject::from_spoly(Arc::clone(ring), s_i, s_j, &pair) {
