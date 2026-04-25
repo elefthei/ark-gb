@@ -152,3 +152,19 @@ on behalf of Brent Baccala (cosine@freesoft.org). The ADR ledger
 ([`docs/design-decisions.md`](docs/design-decisions.md)) records
 the architectural decisions and the references they were derived
 from.*
+
+## Reproducible benchmarks
+
+`bench-baseline.sh <name>` runs the `groebner` Criterion suite with
+`RUSTFLAGS="-C target-cpu=native"` and saves a baseline next to a
+provenance manifest under `target/criterion/.baselines/`.
+
+```bash
+./bench-baseline.sh before-i1                  # full sweep
+./bench-baseline.sh before-i1 --quick          # ~1 minute smoke
+CARGO_BENCH_ARGS="--features linked_list_poly" ./bench-baseline.sh after-list
+```
+
+`.cargo/config.toml` already pins `target-cpu=native` for repo-local
+builds, so the AVX2 sev-sweep path in `src/simd.rs`
+(`#[cfg(target_feature = "avx2")]`) is compiled in by default.
