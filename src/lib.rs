@@ -41,6 +41,7 @@ pub mod reducer;
 pub mod ring;
 pub mod sbasis;
 mod simd;
+pub mod validate;
 
 pub use bba::compute_gb;
 pub use bset::BSet;
