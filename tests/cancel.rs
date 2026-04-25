@@ -17,12 +17,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rustgb::field::Field;
-use rustgb::monomial::Monomial;
-use rustgb::ordering::MonoOrder;
-use rustgb::poly::Poly;
-use rustgb::ring::Ring;
-use rustgb::{CancelHandle, Cancelled, Computation, compute_gb_parallel};
+use ark_gb::field::Field;
+use ark_gb::monomial::Monomial;
+use ark_gb::ordering::MonoOrder;
+use ark_gb::poly::Poly;
+use ark_gb::ring::Ring;
+use ark_gb::{CancelHandle, Cancelled, Computation, compute_gb_parallel};
 
 fn mk_ring(nvars: u32, p: u32) -> Arc<Ring> {
     Arc::new(Ring::new(nvars, MonoOrder::DegRevLex, Field::new(p).unwrap()).unwrap())

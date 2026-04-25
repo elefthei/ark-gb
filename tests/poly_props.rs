@@ -5,7 +5,7 @@
 //! Rust `proptest` style.
 
 use proptest::prelude::*;
-use rustgb::{Coeff, Field, MonoOrder, Monomial, Poly, Ring};
+use ark_gb::{Coeff, Field, MonoOrder, Monomial, Poly, Ring};
 
 /// A small prime keeps the tests fast while catching arithmetic bugs.
 const DEFAULT_PRIME: u32 = 32003;

@@ -7,12 +7,12 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use rustgb::compute_gb;
-use rustgb::field::{Coeff, Field};
-use rustgb::monomial::Monomial;
-use rustgb::ordering::MonoOrder;
-use rustgb::poly::Poly;
-use rustgb::ring::Ring;
+use ark_gb::compute_gb;
+use ark_gb::field::{Coeff, Field};
+use ark_gb::monomial::Monomial;
+use ark_gb::ordering::MonoOrder;
+use ark_gb::poly::Poly;
+use ark_gb::ring::Ring;
 
 fn mk_ring(nvars: u32, p: u32) -> Arc<Ring> {
     Arc::new(Ring::new(nvars, MonoOrder::DegRevLex, Field::new(p).unwrap()).unwrap())

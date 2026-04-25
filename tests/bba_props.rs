@@ -1,7 +1,7 @@
 //! Property-based tests for the bba driver.
 //!
 //! These exercise three invariants of the reduced Gröbner basis
-//! returned by [`rustgb::compute_gb`]:
+//! returned by [`ark_gb::compute_gb`]:
 //!
 //! 1. **Determinism** — running `compute_gb` twice on the same input
 //!    produces bit-identical output.
@@ -23,13 +23,13 @@
 
 use std::sync::Arc;
 
-use rustgb::compute_gb;
-use rustgb::compute_gb_parallel;
-use rustgb::field::Field;
-use rustgb::monomial::Monomial;
-use rustgb::ordering::MonoOrder;
-use rustgb::poly::Poly;
-use rustgb::ring::Ring;
+use ark_gb::compute_gb;
+use ark_gb::compute_gb_parallel;
+use ark_gb::field::Field;
+use ark_gb::monomial::Monomial;
+use ark_gb::ordering::MonoOrder;
+use ark_gb::poly::Poly;
+use ark_gb::ring::Ring;
 
 /// Tiny LCG for deterministic "random" inputs. Same one used in
 /// `field.rs`'s tests.
@@ -80,7 +80,7 @@ fn random_poly(rng: &mut Prng, ring: &Ring, max_terms: u32, max_exp: u32) -> Pol
 /// some ideal I). Returns the normal form.
 ///
 /// This is a transparent polynomial reducer, used by the inclusion
-/// property test. It doesn't reach into any private rustgb API —
+/// property test. It doesn't reach into any private ark_gb API —
 /// it uses `Poly::sub_mul_term` as the single reduction step.
 fn normal_form(p: &Poly, gb: &[Poly], ring: &Ring) -> Poly {
     let mut cur = p.clone();
@@ -105,7 +105,7 @@ fn normal_form(p: &Poly, gb: &[Poly], ring: &Ring) -> Poly {
         }
         // Leader has no divisor. Try to reduce non-leading terms.
         // If every term has no divisor, we're done.
-        let terms: Vec<(rustgb::field::Coeff, Monomial)> =
+        let terms: Vec<(ark_gb::field::Coeff, Monomial)> =
             cur.iter().map(|(c, m)| (c, m.clone())).collect();
         let mut made_progress = false;
         let mut rebuilt = vec![];

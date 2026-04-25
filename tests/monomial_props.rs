@@ -1,7 +1,7 @@
 //! Property-based tests for monomials.
 
 use proptest::prelude::*;
-use rustgb::{Field, MonoOrder, Monomial, Ring};
+use ark_gb::{Field, MonoOrder, Monomial, Ring};
 use std::cmp::Ordering;
 
 /// Generate a random ring with `nvars ∈ [1, 25]`, fixed prime.

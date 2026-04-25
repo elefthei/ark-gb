@@ -1,19 +1,24 @@
-# rustgb
+# ark-gb
 
-Rust port of [Singular](https://www.singular.uni-kl.de/)'s `bba`
-Gröbner-basis engine.
+Gröbner-basis engine over [arkworks](https://github.com/arkworks-rs/algebra) fields.
 
-The crate is consumed by Singular through a `cdylib`
-(`librustgb.so`); the integration lives on the
-`rustgb-integration` worktree of `~/Singular`, which builds the
-`singrust` dyn_module and the `rustgb-dispatch.lib` shim that
-routes `std()` through `rustgb_std` when the ring is supported.
+This crate is a fork of [BrentBaccala/rustgb](https://github.com/BrentBaccala/rustgb)
+(a Rust port of [Singular](https://www.singular.uni-kl.de/)'s `bba`
+engine), generalized so the coefficient ring is any `F: ark_ff::Field`
+instead of the hardcoded `Z/p` (`p < 2^31`, u32 + Barrett reduction)
+of upstream.
+
+The Singular `cdylib` integration and the C FFI shim from upstream
+have been **removed** — this fork is a pure Rust library aimed at
+embedding inside arkworks-based protocol pipelines (e.g. zippel).
 
 ## Scope
 
 What's in the crate today:
 
-- Field: `Z/p` for prime `p < 2^31`, Barrett reduction.
+- Field: `F: ark_ff::Field` (work-in-progress on the
+  `arkworks-port` branch — `master` still carries upstream's
+  `Z/p` until the field generalization lands).
 - Monomial: packed-exponent layout (8 bits/variable, 4×u64
   words), supports up to 31 variables. Cached SEV (short
   exponent vector) and total-degree on the struct.
@@ -25,19 +30,17 @@ What's in the crate today:
   reducer (default) or a heap-based Monagan-Pearce reducer
   (`heap_reducer`). Pair generation, `chainCritNormal`,
   `enterOnePairNormal`, and the LSet structure.
-- FFI: opaque term-iterator handles
-  (`rustgb_term_iter_open` / `_next` / `_close`) plus
-  `rustgb_compute` / `rustgb_std` for Singular dispatch.
 - SIMD: AVX2 paths for the SEV scan
   (`gm::chain_crit_normal`, `bba::reduce_lobject` candidate
   filter) and `Monomial::div`. Compiled in only when AVX2 is
   available at build time.
-- Parallel reduction: experimental, behind `RUSTGB_THREADS`
+- Parallel reduction: experimental, behind `ARK_GB_THREADS`
   env var (default 1, serial). Serial path is bit-for-bit
   deterministic; parallel path is not yet validated against
   the staging suite.
-- Constraints: degrevlex ordering only; coefficient ring is
-  `Z/p` only.
+- Constraints: degrevlex ordering by default; an `Elim`
+  block-elimination order is planned on the `arkworks-port`
+  branch.
 
 What's tracked in the ADR ledger
 ([`docs/design-decisions.md`](docs/design-decisions.md)) — read

@@ -1,6 +1,6 @@
 //! Heap-based Monagan-Pearce reducer.
 //!
-//! See `~/rustgb/docs/design-decisions.md` ADR-008 for the
+//! See `~/ark_gb/docs/design-decisions.md` ADR-008 for the
 //! design rationale and the Singular / FLINT / mathicgb
 //! comparison that motivated this architecture.
 //!
@@ -335,7 +335,7 @@ impl<'a> ReducerHeap<'a> {
     /// poly's term sequence.
     ///
     /// Assumes basis polynomials are monic (lc = 1), per
-    /// rustgb's bba convention. With this assumption `lc(g) = 1`,
+    /// ark_gb's bba convention. With this assumption `lc(g) = 1`,
     /// so the new reducer's coeff is just `-leader_coeff`.
     ///
     /// Consumes self and returns `(survivor_poly, final_sugar)`.

@@ -1,7 +1,7 @@
-use rustgb::field::Field;
-use rustgb::monomial::Monomial;
-use rustgb::ordering::MonoOrder;
-use rustgb::ring::Ring;
+use ark_gb::field::Field;
+use ark_gb::monomial::Monomial;
+use ark_gb::ordering::MonoOrder;
+use ark_gb::ring::Ring;
 
 #[inline(never)]
 #[unsafe(no_mangle)]

@@ -1,7 +1,7 @@
-//! Minimal usage example for `rustgb::compute_gb`.
+//! Minimal usage example for `ark_gb::compute_gb`.
 //!
 //! Builds the cyclic-3 ideal in `Z/32003[x, y, z]` under degrevlex,
-//! runs [`rustgb::compute_gb`], and prints the reduced Gröbner
+//! runs [`ark_gb::compute_gb`], and prints the reduced Gröbner
 //! basis in a Singular-ish textual form.
 //!
 //! Also prints timings for cyclic-3, cyclic-4, and cyclic-5 so the
@@ -14,12 +14,12 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use rustgb::compute_gb;
-use rustgb::field::{Coeff, Field};
-use rustgb::monomial::Monomial;
-use rustgb::ordering::MonoOrder;
-use rustgb::poly::Poly;
-use rustgb::ring::Ring;
+use ark_gb::compute_gb;
+use ark_gb::field::{Coeff, Field};
+use ark_gb::monomial::Monomial;
+use ark_gb::ordering::MonoOrder;
+use ark_gb::poly::Poly;
+use ark_gb::ring::Ring;
 
 fn mk_ring(nvars: u32, p: u32) -> Arc<Ring> {
     Arc::new(Ring::new(nvars, MonoOrder::DegRevLex, Field::new(p).unwrap()).unwrap())

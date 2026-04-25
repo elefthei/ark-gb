@@ -9,7 +9,7 @@
 //! * `len()` matches the number of live pairs actually returned.
 
 use proptest::prelude::*;
-use rustgb::{Field, LSet, MonoOrder, Monomial, Pair, Ring};
+use ark_gb::{Field, LSet, MonoOrder, Monomial, Pair, Ring};
 
 const P: u32 = 32003;
 const NVARS: u32 = 3;

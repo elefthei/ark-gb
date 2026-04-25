@@ -27,7 +27,7 @@
 //!
 //! ## Shared-state audit
 //!
-//! See `~/project/docs/rustgb-parallel-report.md` for the full
+//! See `~/project/docs/ark_gb-parallel-report.md` for the full
 //! table; summary:
 //!
 //! | Field                   | Type                 | Reader sync | Writer sync |
@@ -66,7 +66,7 @@ pub struct Cancelled;
 
 impl std::fmt::Display for Cancelled {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("rustgb computation was cancelled")
+        f.write_str("ark_gb computation was cancelled")
     }
 }
 
@@ -266,7 +266,7 @@ fn build_lobject_for_pair(comp: &Computation, pair: &Pair) -> Option<LObject> {
 /// this implementation; each worker holds one active LObject and
 /// reduces it serially. This matches the port plan §10.3 "start
 /// with 1 active LObject per worker" guidance. Follow-up
-/// (`rustgb-perf`) can add pipeline-depth > 1.
+/// (`ark_gb-perf`) can add pipeline-depth > 1.
 pub fn reduce_lobject_parallel(lobj: &mut LObject, comp: &Computation) {
     loop {
         if lobj.is_zero() {

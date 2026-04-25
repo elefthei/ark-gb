@@ -12,13 +12,13 @@
 //! * does not touch the LSet side (we only check B survivors).
 //!
 //! If the sev-based path disagrees with the slow reference, the sev
-//! pre-filter has a bug. Since MAX_VARS = 31 in the rustgb bootstrap
+//! pre-filter has a bug. Since MAX_VARS = 31 in the ark_gb bootstrap
 //! (sev has 64 bits) the sev bloom filter is exact, so the two must
 //! agree term-for-term.
 
 use proptest::prelude::*;
-use rustgb::gm;
-use rustgb::{Field, LSet, MonoOrder, Monomial, Poly, Ring, SBasis};
+use ark_gb::gm;
+use ark_gb::{Field, LSet, MonoOrder, Monomial, Poly, Ring, SBasis};
 
 const P: u32 = 32003;
 const MAX_VARS: u32 = 4;

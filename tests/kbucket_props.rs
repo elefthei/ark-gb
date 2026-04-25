@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use proptest::prelude::*;
-use rustgb::{Coeff, Field, KBucket, MonoOrder, Monomial, Poly, Ring};
+use ark_gb::{Coeff, Field, KBucket, MonoOrder, Monomial, Poly, Ring};
 
 const P: u32 = 32003;
 const MAX_VARS: u32 = 5;

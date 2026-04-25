@@ -6,7 +6,7 @@
 //! every earlier element for LM divisibility by a later element".
 
 use proptest::prelude::*;
-use rustgb::{Coeff, Field, MonoOrder, Monomial, Poly, Ring, SBasis};
+use ark_gb::{Coeff, Field, MonoOrder, Monomial, Poly, Ring, SBasis};
 
 const P: u32 = 32003;
 const MAX_VARS: u32 = 4;

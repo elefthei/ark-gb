@@ -7,7 +7,7 @@
 //!
 //! Run with `cargo run --release --example sanity`.
 
-use rustgb::{Field, MonoOrder, Monomial, Poly, Ring};
+use ark_gb::{Field, MonoOrder, Monomial, Poly, Ring};
 use std::time::Instant;
 
 fn build_ring() -> Ring {

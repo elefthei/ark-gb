@@ -15,7 +15,7 @@
 //!   hold the exponent (max value 127), and bit 7 is reserved as an
 //!   overflow guard so a Singular-style divmask check on the result of
 //!   a packed-word add can detect per-byte overflow in O(words) ops.
-//!   See `~/rustgb/docs/design-decisions.md` ADR-005. The total degree
+//!   See `~/ark_gb/docs/design-decisions.md` ADR-005. The total degree
 //!   byte (byte 31) keeps the full 8 bits since it is rewritten cleanly
 //!   after every mul rather than incremented, so it needs no guard.
 //!
@@ -64,7 +64,7 @@ pub struct Ring {
     /// `Monomial::mul`'s `debug_assert!` invariant (ADR-018). Release
     /// builds of `mul` no longer consult this mask — matching
     /// Singular's PDEBUG-gated check. See ADR-005 / ADR-018 in
-    /// `~/rustgb/docs/design-decisions.md`.
+    /// `~/ark_gb/docs/design-decisions.md`.
     overflow_mask: [u64; 4],
     /// Per-word XOR mask used to flip the degrevlex tie-break direction
     /// at compare time: `0x7F` in each variable byte slot, `0x00` in
@@ -95,8 +95,8 @@ impl Ring {
     /// `~/Singular/libpolys/polys/monomials/p_polys.h:1432`). Debug
     /// builds catch the violation via `debug_assert!`. If a future
     /// FFI caller admits rings whose bba-step products could
-    /// overflow, the dispatch filter (in Singular-rustgb's
-    /// `rustgb-dispatch.lib`) must tighten to exclude them before
+    /// overflow, the dispatch filter (in Singular-ark_gb's
+    /// `ark_gb-dispatch.lib`) must tighten to exclude them before
     /// the ring reaches this constructor.
     pub fn new(nvars: u32, ordering: MonoOrder, field: Field) -> Option<Self> {
         if nvars == 0 || nvars > MAX_VARS {

@@ -43,7 +43,7 @@ use crate::sbasis::SBasis;
 ///   output a deterministic function of the ideal, independent of
 ///   the order in which generators appear in `input`.
 ///
-/// Thread count: controlled by the `RUSTGB_THREADS` environment
+/// Thread count: controlled by the `ARK_GB_THREADS` environment
 /// variable. Default 1 (serial path). Values `>= 2` dispatch to
 /// [`crate::parallel::compute_gb_parallel`], which runs a
 /// continuous-cursor sweep with worker-side drain.
@@ -54,7 +54,7 @@ use crate::sbasis::SBasis;
 /// permutation — and the canonical sort removes the permutation
 /// ambiguity, so the output is still a function of the ideal.
 pub fn compute_gb(ring: Arc<Ring>, input: Vec<Poly>) -> Vec<Poly> {
-    let num_threads = rustgb_threads();
+    let num_threads = ark_gb_threads();
     if num_threads == 1 {
         compute_gb_serial(ring, input)
     } else {
@@ -69,11 +69,11 @@ pub fn compute_gb(ring: Arc<Ring>, input: Vec<Poly>) -> Vec<Poly> {
     }
 }
 
-/// Parse `RUSTGB_THREADS` from the environment. Default 1. Any
+/// Parse `ARK_GB_THREADS` from the environment. Default 1. Any
 /// non-numeric or negative value parses to 1. Cap at 256 so a user
-/// typo (`RUSTGB_THREADS=1000000`) doesn't explode the thread pool.
-fn rustgb_threads() -> usize {
-    match std::env::var("RUSTGB_THREADS") {
+/// typo (`ARK_GB_THREADS=1000000`) doesn't explode the thread pool.
+fn ark_gb_threads() -> usize {
+    match std::env::var("ARK_GB_THREADS") {
         Ok(v) => v.parse::<usize>().unwrap_or(1).clamp(1, 256),
         Err(_) => 1,
     }
@@ -364,7 +364,7 @@ pub fn reduce_lobject_heap(lobj: &mut LObject, s_basis: &SBasis, ring: &Arc<Ring
 /// paths produce identical results on identical inputs (verified by
 /// `find_divisor_idx_simd_matches_scalar` in the unit tests).
 ///
-/// See `~/rustgb/docs/design-decisions.md` ADR-007 for the rationale.
+/// See `~/ark_gb/docs/design-decisions.md` ADR-007 for the rationale.
 #[inline]
 fn find_divisor_idx(
     s_basis: &SBasis,
@@ -403,7 +403,7 @@ fn find_divisor_idx(
 
 // `find_sev_match` (and its AVX2 / scalar implementations) live
 // in `crate::simd` as of ADR-009 so they can be reused from
-// `gm::chain_crit_normal`. See `~/rustgb/src/simd.rs`.
+// `gm::chain_crit_normal`. See `~/ark_gb/src/simd.rs`.
 use crate::simd::find_sev_match;
 
 /// Walk the basis and tail-reduce every non-redundant element against

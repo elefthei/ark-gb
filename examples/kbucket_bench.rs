@@ -23,7 +23,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use rustgb::{Coeff, Field, KBucket, MonoOrder, Monomial, Poly, Ring};
+use ark_gb::{Coeff, Field, KBucket, MonoOrder, Monomial, Poly, Ring};
 
 /// Deterministic LCG used to generate all random data.
 struct Lcg(u64);

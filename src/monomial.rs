@@ -4,7 +4,7 @@
 //! for a ring with `nvars = n`. Exponents are packed into four `u64`
 //! words — 32 bytes total — at 8 bytes per slot, of which the low 7
 //! bits hold the exponent (max value 127) and bit 7 is reserved as an
-//! overflow guard. See `~/rustgb/docs/design-decisions.md` ADR-005 for
+//! overflow guard. See `~/ark_gb/docs/design-decisions.md` ADR-005 for
 //! the rationale; in short: this matches Singular's `p_LmExpVectorAddIsOk`
 //! divmask trick (a single AND-and-test per word detects per-byte
 //! overflow on the result of a packed-word add) and FLINT's flat

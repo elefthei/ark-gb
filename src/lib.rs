@@ -1,4 +1,4 @@
-//! # rustgb
+//! # ark_gb
 //!
 //! Polynomial layer for the Singular Groebner-basis port.
 //!
@@ -27,7 +27,6 @@
 pub mod bba;
 pub mod bset;
 pub mod computation;
-pub mod ffi;
 pub mod field;
 pub mod gm;
 pub mod kbucket;

@@ -11,8 +11,8 @@
 
 use std::time::Instant;
 
-use rustgb::gm;
-use rustgb::{Coeff, Field, LSet, MonoOrder, Monomial, Pair, Poly, Ring, SBasis};
+use ark_gb::gm;
+use ark_gb::{Coeff, Field, LSet, MonoOrder, Monomial, Pair, Poly, Ring, SBasis};
 
 const P: u32 = 32003;
 const NVARS: u32 = 6;

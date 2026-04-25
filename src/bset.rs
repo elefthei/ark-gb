@@ -26,7 +26,7 @@ pub struct BSet {
     /// lockstep with `pairs` (push appends to both; swap_remove
     /// swap-removes from both at the same index). Used by the
     /// SIMD-batched chain-criterion sweep introduced in ADR-009;
-    /// see `~/rustgb/docs/design-decisions.md` ADR-009 for the
+    /// see `~/ark_gb/docs/design-decisions.md` ADR-009 for the
     /// rationale (Singular's `sev_flat` flat-parallel-array
     /// pattern, applied to the BSet's pairs).
     lcm_sevs: Vec<u64>,

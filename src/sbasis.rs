@@ -44,7 +44,7 @@ pub struct SBasis {
     /// candidate. Each `Monomial` is 48 bytes, so for ~3000-element
     /// staging bases the cache totals ~144 KB — fits in L2,
     /// streams cleanly during the sweep. See ADR-010 in
-    /// `~/rustgb/docs/design-decisions.md`.
+    /// `~/ark_gb/docs/design-decisions.md`.
     lms: Vec<Monomial>,
     /// Leading total degrees. `lm_degs[i] == polys[i].lm_deg()`.
     lm_degs: Vec<u32>,

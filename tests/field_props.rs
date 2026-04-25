@@ -5,7 +5,7 @@
 //! wonder whether the coefficient layer is trustworthy.
 
 use proptest::prelude::*;
-use rustgb::Field;
+use ark_gb::Field;
 
 /// A curated list of primes spanning the permitted range.
 const PRIMES: &[u32] = &[

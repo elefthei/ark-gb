@@ -1,18 +1,18 @@
 [package]
-name = "rustgb"
+name = "ark-gb"
 version = "0.0.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
-description = "Groebner basis engine for Singular (polynomial layer only -- see ~/project/docs/rust-bba-port-plan.md)"
+description = "Groebner basis engine over arkworks fields (fork of BrentBaccala/rustgb)"
+repository = "https://github.com/elefthei/ark-gb"
 
 [lib]
-# `cdylib` produces librustgb.so for the Singular dyn_module to
-# dlopen / link against; `rlib` keeps the crate usable as a normal
-# Rust dependency for tests and examples.
-crate-type = ["cdylib", "rlib"]
+# Pure Rust library; the upstream `cdylib` (for Singular FFI) has been
+# dropped in this fork.
+crate-type = ["rlib"]
 
 [dependencies]
-# stdlib only for now; add as needed.
+ark-ff = { git = "https://github.com/arkworks-rs/algebra.git", default-features = false }
 
 [features]
 # Default reducer is the geobucket (ADR-002). Enabling this feature

@@ -67,12 +67,12 @@ use super::node_pool::POOL;
 /// though it had originated there. With the current pool-backed
 /// variant this is still sound (all `Node`s are POD-equivalent;
 /// reusing storage across threads does not corrupt state) **and**
-/// single-thread safe (rustgb's bba driver is single-threaded per
+/// single-thread safe (ark_gb's bba driver is single-threaded per
 /// `compute_gb` invocation), but it silently leaks capacity from the
 /// originating thread's pool. Tests that spawn threads and share
 /// `Poly`s should be aware of this.
 ///
-/// If rustgb's parallel story changes (`SINGULAR_THREADS>1`; cf.
+/// If ark_gb's parallel story changes (`SINGULAR_THREADS>1`; cf.
 /// `~/Singular-parallel-bba`), the pool design has to be revisited;
 /// this is tracked as follow-up work in ADR-016.
 pub struct Poly {
