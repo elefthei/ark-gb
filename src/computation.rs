@@ -163,11 +163,10 @@ impl<F: Field + Copy + Send + Sync> SharedSBasis<F> {
         let sevs = &inner.sevs;
         debug_assert!(idx < polys.len());
         let h_lm_sev = sevs[idx];
-        let h_lm = polys[idx]
+        let h_lm = *polys[idx]
             .leading()
             .expect("non-zero basis element")
-            .1
-            .clone();
+            .1;
         // Grab redundant-read-lock to index into the flag array.
         let r = self.redundant.read().unwrap();
         for i in 0..idx {

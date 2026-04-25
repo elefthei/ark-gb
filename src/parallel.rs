@@ -290,11 +290,10 @@ pub fn reduce_lobject_parallel<F: Field + Copy + Send + Sync>(
 
         let lm_sev = lobj.lm_sev();
         let lm_coeff = lobj.lm_coeff();
-        let lm = lobj
+        let lm = *lobj
             .leading()
             .expect("non-zero lobject has leading")
-            .1
-            .clone();
+            .1;
 
         let divisor: Option<(Arc<Poly<F>>, u32)> = {
             let snap = comp.basis.read_snapshot();
@@ -423,7 +422,7 @@ pub fn insert_and_enterpairs<F: Field + Copy + Send + Sync>(
             .collect();
     }
 
-    let h_lm = h_arc.leading().expect("h is nonzero").1.clone();
+    let h_lm = *h_arc.leading().expect("h is nonzero").1;
     let h_lm_sev = h_arc.lm_sev();
 
     // Iterate through non-redundant older indices (s_idx < h_idx).
@@ -760,7 +759,7 @@ fn tail_reduce_all<F: Field + Copy + Send + Sync>(
         let f = polys[i].clone();
         let (lc, lm) = {
             let (c, m) = f.leading().expect("nonzero");
-            (c, m.clone())
+            (c, *m)
         };
         let tail = f.drop_leading();
 
@@ -792,7 +791,7 @@ fn reduce_tail<F: Field + Copy + Send + Sync>(
         let Some((c, m_ref)) = bucket.leading() else {
             break;
         };
-        let m = m_ref.clone();
+        let m = *m_ref;
         let lm_sev = m.sev();
 
         let mut divisor: Option<usize> = None;
@@ -846,9 +845,9 @@ fn prepend_leading<F: Field + Copy + Send + Sync>(
     ring: &Ring<F>,
 ) -> Poly<F> {
     let mut terms: Vec<(F, Monomial)> = Vec::with_capacity(tail.len() + 1);
-    terms.push((lc, lm.clone()));
+    terms.push((lc, *lm));
     for (c, m) in tail.iter() {
-        terms.push((c, m.clone()));
+        terms.push((c, *m));
     }
     Poly::from_terms(ring, terms)
 }

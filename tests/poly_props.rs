@@ -190,7 +190,7 @@ proptest! {
         } else {
             let (pc, pm) = prod.leading().unwrap();
             prop_assert_eq!(pc, expected_c);
-            prop_assert_eq!(pm.clone(), expected_m);
+            prop_assert_eq!(*pm, expected_m);
         }
     }
 

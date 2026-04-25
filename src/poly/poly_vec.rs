@@ -556,7 +556,7 @@ impl<F: Field + Copy> Poly<F> {
             match s_m[i].cmp(&mq_term_mon, ring) {
                 std::cmp::Ordering::Greater => {
                     out_c.push(s_c[i]);
-                    out_m.push(s_m[i].clone());
+                    out_m.push(s_m[i]);
                     i += 1;
                 }
                 std::cmp::Ordering::Less => {
@@ -573,7 +573,7 @@ impl<F: Field + Copy> Poly<F> {
                     let diff = s_c[i] - cmq;
                     if !diff.is_zero() {
                         out_c.push(diff);
-                        out_m.push(s_m[i].clone());
+                        out_m.push(s_m[i]);
                     }
                     i += 1;
                     j += 1;
@@ -582,7 +582,7 @@ impl<F: Field + Copy> Poly<F> {
         }
         while i < s_m.len() {
             out_c.push(s_c[i]);
-            out_m.push(s_m[i].clone());
+            out_m.push(s_m[i]);
             i += 1;
         }
         while j < q_m.len() {
@@ -774,14 +774,14 @@ fn merge<F: Field + Copy>(ring: &Ring<F>, a: &Poly<F>, b: &Poly<F>, subtract: bo
             match a_m[i].cmp(&b_m[j], ring) {
                 std::cmp::Ordering::Greater => {
                     spare_c[k].write(a_c[i]);
-                    spare_m[k].write(a_m[i].clone());
+                    spare_m[k].write(a_m[i]);
                     k += 1;
                     i += 1;
                 }
                 std::cmp::Ordering::Less => {
                     let c = if subtract { -b_c[j] } else { b_c[j] };
                     spare_c[k].write(c);
-                    spare_m[k].write(b_m[j].clone());
+                    spare_m[k].write(b_m[j]);
                     // Branch-free cancellation skip: write
                     // unconditionally; advance k only on nonzero.
                     // The next iteration overwrites the same slot if
@@ -793,7 +793,7 @@ fn merge<F: Field + Copy>(ring: &Ring<F>, a: &Poly<F>, b: &Poly<F>, subtract: bo
                     let bc = if subtract { -b_c[j] } else { b_c[j] };
                     let s = a_c[i] + bc;
                     spare_c[k].write(s);
-                    spare_m[k].write(a_m[i].clone());
+                    spare_m[k].write(a_m[i]);
                     k += (!s.is_zero()) as usize;
                     i += 1;
                     j += 1;
@@ -802,14 +802,14 @@ fn merge<F: Field + Copy>(ring: &Ring<F>, a: &Poly<F>, b: &Poly<F>, subtract: bo
         }
         while i < a_m.len() {
             spare_c[k].write(a_c[i]);
-            spare_m[k].write(a_m[i].clone());
+            spare_m[k].write(a_m[i]);
             k += 1;
             i += 1;
         }
         while j < b_m.len() {
             let c = if subtract { -b_c[j] } else { b_c[j] };
             spare_c[k].write(c);
-            spare_m[k].write(b_m[j].clone());
+            spare_m[k].write(b_m[j]);
             k += (!c.is_zero()) as usize;
             j += 1;
         }
@@ -1079,7 +1079,7 @@ mod tests {
         let slow_tail: Vec<(Fr, Monomial)> = p.live_coeffs()[1..]
             .iter()
             .zip(p.live_terms()[1..].iter())
-            .map(|(&c, m)| (c, m.clone()))
+            .map(|(&c, m)| (c, *m))
             .collect();
         let slow = Poly::from_terms(&r, slow_tail);
         assert_eq!(fast, slow);

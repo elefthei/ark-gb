@@ -177,7 +177,7 @@ impl<F: Field + Copy> SBasis<F> {
         let lm_deg = h.lm_deg();
         // Capture the leading monomial before the poly moves into
         // the Box. `unwrap` is safe: we just checked is_zero above.
-        let lm = h.leading().expect("non-zero").1.clone();
+        let lm = *h.leading().expect("non-zero").1;
         let idx = self.polys.len();
         let arrival = self.next_arrival;
         self.next_arrival += 1;
@@ -203,7 +203,7 @@ impl<F: Field + Copy> SBasis<F> {
         // ADR-010: read leader from the lms cache rather than
         // dereferencing polys[idx].leading() — the lms cache lives
         // contiguous with sevs, no Box pointer chase.
-        let h_lm = self.lms[idx].clone();
+        let h_lm = self.lms[idx];
         for i in 0..idx {
             if self.redundant[i] {
                 continue;
@@ -250,11 +250,10 @@ impl<F: Field + Copy> SBasis<F> {
         // Debug-only check that leading monomial is preserved.
         #[cfg(debug_assertions)]
         {
-            let old_lm = self.polys[idx]
+            let old_lm = *self.polys[idx]
                 .leading()
                 .expect("non-redundant is nonzero")
-                .1
-                .clone();
+                .1;
             let new_lm = new_poly.leading().unwrap().1;
             assert!(
                 old_lm.cmp(new_lm, ring).is_eq(),
@@ -268,7 +267,7 @@ impl<F: Field + Copy> SBasis<F> {
         // the new leading monomial equals the old one, so this is
         // a no-op semantically; we update anyway in case a future
         // caller relaxes the invariant.
-        self.lms[idx] = new_poly.leading().expect("non-zero").1.clone();
+        self.lms[idx] = *new_poly.leading().expect("non-zero").1;
         *self.polys[idx] = new_poly;
     }
 

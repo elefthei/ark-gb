@@ -271,11 +271,10 @@ pub fn reduce_lobject_geobucket<F: Field + Copy + Send + Sync>(
         // `lobj.leading()` borrows the bucket mutably — we need to
         // collect the monomial value before running the divisor
         // search over the S-basis.
-        let lm = lobj
+        let lm = *lobj
             .leading()
             .expect("non-zero lobject has leading")
-            .1
-            .clone();
+            .1;
 
         let Some(idx) = find_divisor_idx(s_basis, lm_sev, &lm, ring) else {
             return;
@@ -464,7 +463,7 @@ fn tail_reduce_all<F: Field + Copy + Send + Sync>(
         // as a bucket, then re-attach the leading term.
         let (lc, lm) = {
             let (c, m) = f.leading().expect("nonzero");
-            (c, m.clone())
+            (c, *m)
         };
         let tail = f.drop_leading();
 
@@ -519,7 +518,7 @@ fn reduce_tail<F: Field + Copy + Send + Sync>(
         let Some((c, m_ref)) = bucket.leading() else {
             break;
         };
-        let m = m_ref.clone();
+        let m = *m_ref;
         let lm_sev = m.sev();
 
         // Sev pre-filter + real divisibility check.
@@ -589,9 +588,9 @@ fn prepend_leading<F: Field + Copy + Send + Sync>(
     ring: &Ring<F>,
 ) -> Poly<F> {
     let mut terms: Vec<(F, crate::monomial::Monomial)> = Vec::with_capacity(tail.len() + 1);
-    terms.push((lc, lm.clone()));
+    terms.push((lc, *lm));
     for (c, m) in tail.iter() {
-        terms.push((c, m.clone()));
+        terms.push((c, *m));
     }
     Poly::from_descending_terms_unchecked(ring, terms)
 }

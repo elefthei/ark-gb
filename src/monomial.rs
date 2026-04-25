@@ -86,7 +86,12 @@ const _BITS_PER_VAR_IS_8: () = assert!(BITS_PER_VAR == 8);
 /// Packed-exponent monomial. See module documentation for layout.
 ///
 /// `Send + Sync`: only owns integer arrays.
-#[derive(Clone, Debug)]
+/// `Copy`: the struct is 48 bytes of plain old data (4×u64 + u64 +
+/// 2×u32). Making it `Copy` lets the compiler treat assignments and
+/// passes-by-value as memcpy, which is what `derive(Clone)` boiled
+/// down to anyway. Hot paths like `Poly::sub_mul_term`'s two-pointer
+/// merge avoid surfacing `clone()` calls in profiles.
+#[derive(Clone, Copy, Debug)]
 pub struct Monomial {
     /// Four u64 words; word 3 is most significant.
     packed: [u64; WORDS_PER_MONO],

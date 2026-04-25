@@ -261,7 +261,7 @@ pub fn enterpairs<F: Field + Copy + Send + Sync>(
     l_set: &mut LSet,
     arrival_start: u64,
 ) -> usize {
-    let h_lm = h_poly.leading().expect("h is nonzero").1.clone();
+    let h_lm = *h_poly.leading().expect("h is nonzero").1;
     let h_lm_sev = h_poly.lm_sev();
 
     let mut b = BSet::new();
@@ -321,7 +321,7 @@ mod tests {
         let mut s = SBasis::new();
         s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[1, 0, 0])));
         let h = Poly::monomial(&r, Fr::one(), mono(&r, &[0, 1, 0]));
-        let h_lm = h.leading().unwrap().1.clone();
+        let h_lm = *h.leading().unwrap().1;
         let got = enter_one_pair_normal(&r, &s, 0, 1, &h_lm, h.lm_sev(), 1, 0);
         assert!(got.is_none(), "coprime LMs must be pruned by product crit");
     }
@@ -332,7 +332,7 @@ mod tests {
         let mut s = SBasis::new();
         s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[1, 1, 0])));
         let h = Poly::monomial(&r, Fr::one(), mono(&r, &[0, 1, 1]));
-        let h_lm = h.leading().unwrap().1.clone();
+        let h_lm = *h.leading().unwrap().1;
         let got = enter_one_pair_normal(&r, &s, 0, 1, &h_lm, h.lm_sev(), 2, 0).unwrap();
         assert_eq!(got.i, 0);
         assert_eq!(got.j, 1);

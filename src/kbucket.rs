@@ -391,8 +391,8 @@ impl<F: Field + Copy> KBucket<F> {
                 // Clone the leader monomial only now (once), for the
                 // cache. The single clone avoids the earlier
                 // scan/rescan pattern that cloned up front.
-                let lead_m = self.slots[best_slot].as_ref().unwrap()
-                    .leading().unwrap().1.clone();
+                let lead_m = *self.slots[best_slot].as_ref().unwrap()
+                    .leading().unwrap().1;
                 self.lm_cache = Some((total_c, lead_m, best_slot));
                 let (c, m, _) = self.lm_cache.as_ref().unwrap();
                 return Some((*c, m));
@@ -423,7 +423,7 @@ impl<F: Field + Copy> KBucket<F> {
     pub fn extract_leading(&mut self) -> Option<(F, Monomial)> {
         let (c, m) = match self.leading() {
             None => return None,
-            Some((c, m)) => (c, m.clone()),
+            Some((c, m)) => (c, *m),
         };
 
         // Drop the leading term from every slot whose leader equals
@@ -618,14 +618,14 @@ mod tests {
         // First call computes.
         let (c1, m1) = {
             let (c, m) = b.leading().unwrap();
-            (c, m.clone())
+            (c, *m)
         };
         // Dirty must now be clear.
         assert_eq!(b.dirty, 0);
         // Second call: cache hit.
         let (c2, m2) = {
             let (c, m) = b.leading().unwrap();
-            (c, m.clone())
+            (c, *m)
         };
         assert_eq!(c1, c2);
         assert_eq!(m1, m2);

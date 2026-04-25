@@ -20,7 +20,7 @@ fn grev_poly(ring: &Ring<Fr>, terms: &[(i64, &[(usize, usize)])]) -> Poly<Fr> {
     for (coeff, mono) in terms {
         let mag = Fr::from(coeff.unsigned_abs());
         let c = if *coeff < 0 { -mag } else { mag };
-        let mut term = Poly::from_terms(ring, vec![(c, unit.clone())]);
+        let mut term = Poly::from_terms(ring, vec![(c, unit)]);
         for &(vi, power) in *mono {
             for _ in 0..power {
                 let v = var_poly(ring, vi);

@@ -137,7 +137,7 @@ proptest! {
             (None, None) => {},
             (Some((sc, sm)), Some((bc, bm))) => {
                 prop_assert_eq!(sc, bc);
-                prop_assert_eq!(sm.clone(), bm.clone());
+                prop_assert_eq!(*sm, *bm);
             },
             (a, b) => prop_assert!(false, "leading disagrees: slow = {:?}, bucket = {:?}",
                 a.is_some(), b.is_some()),
@@ -181,7 +181,7 @@ proptest! {
             Some((sc, sm)) => {
                 let (bc, bm) = bucket_lead.expect("bucket lead present when slow has lead");
                 prop_assert_eq!(bc, sc);
-                prop_assert_eq!(bm.clone(), sm.clone());
+                prop_assert_eq!(bm, *sm);
 
                 // The remainder should be slow minus its leading term,
                 // which equals reconstructing from slow's non-leading

@@ -89,7 +89,7 @@ fn bench_lset_pop_reinsert() {
     let lcm = Monomial::from_exponents(&r, &vec![1u32; r.nvars() as usize]).unwrap();
     // Seed.
     for k in 0u32..256u32 {
-        l.insert(Pair::new(0, k + 1, lcm.clone(), k % 17, k as u64));
+        l.insert(Pair::new(0, k + 1, lcm, k % 17, k as u64));
     }
 
     let t0 = Instant::now();
@@ -103,7 +103,7 @@ fn bench_lset_pop_reinsert() {
         l.insert(Pair::new(
             p.i,
             p.j,
-            lcm.clone(),
+            lcm,
             sugar_cursor,
             arrival_cursor,
         ));

@@ -62,7 +62,7 @@ proptest! {
     fn redundancy_matches_naive((r, lms) in basis_strategy()) {
         let mut s = SBasis::<Fr>::new();
         for m in &lms {
-            s.insert(&r, Poly::monomial(&r, Fr::one(), m.clone()));
+            s.insert(&r, Poly::monomial(&r, Fr::one(), *m));
         }
         s.assert_canonical(&r);
         let got: Vec<bool> = (0..lms.len()).map(|i| s.is_redundant(i)).collect();
@@ -74,7 +74,7 @@ proptest! {
     fn len_counts_all_polys((r, lms) in basis_strategy()) {
         let mut s = SBasis::<Fr>::new();
         for m in &lms {
-            s.insert(&r, Poly::monomial(&r, Fr::one(), m.clone()));
+            s.insert(&r, Poly::monomial(&r, Fr::one(), *m));
         }
         // Every insert produces exactly one basis element, regardless
         // of redundancy.
@@ -85,7 +85,7 @@ proptest! {
     fn sevs_and_lm_degs_match_polys((r, lms) in basis_strategy()) {
         let mut s = SBasis::<Fr>::new();
         for m in &lms {
-            s.insert(&r, Poly::monomial(&r, Fr::one(), m.clone()));
+            s.insert(&r, Poly::monomial(&r, Fr::one(), *m));
         }
         for (i, m) in lms.iter().enumerate() {
             prop_assert_eq!(s.sevs()[i], m.sev());

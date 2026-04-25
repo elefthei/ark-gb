@@ -125,9 +125,9 @@ proptest! {
         // Build the SBasis with single-term polys.
         let mut s = SBasis::<Fr>::new();
         for m in &basis_lms {
-            s.insert(&r, Poly::monomial(&r, Fr::one(), m.clone()));
+            s.insert(&r, Poly::monomial(&r, Fr::one(), *m));
         }
-        let h = Poly::monomial(&r, Fr::one(), h_lm.clone());
+        let h = Poly::monomial(&r, Fr::one(), h_lm);
         let h_idx = s.insert(&r, h.clone()) as u32;
 
         // Snapshot post-redundancy state of the pre-h basis. The
@@ -135,11 +135,10 @@ proptest! {
         // want are for indices 0..h_idx.
         let lms_pre: Vec<Monomial> = (0..h_idx as usize)
             .map(|i| {
-                s.poly(i)
+                *s.poly(i)
                     .leading()
                     .unwrap()
                     .1
-                    .clone()
             })
             .collect();
         let red: Vec<bool> = (0..h_idx as usize).map(|i| s.is_redundant(i)).collect();

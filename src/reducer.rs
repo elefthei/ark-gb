@@ -751,7 +751,7 @@ mod tests {
         let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
         h.push_reducer(Reducer {
             poly: &p,
-            multiplier: one.clone(),
+            multiplier: one,
             coeff: Fr::one(),
             cursor: p.cursor(),
             sugar: 3,
@@ -788,7 +788,7 @@ mod tests {
         let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
         h.push_reducer(Reducer {
             poly: &p,
-            multiplier: one.clone(),
+            multiplier: one,
             coeff: Fr::one(),
             cursor: p.cursor(),
             sugar: 2,
@@ -826,7 +826,7 @@ mod tests {
         let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
         h.push_reducer(Reducer {
             poly: &p,
-            multiplier: one.clone(),
+            multiplier: one,
             coeff: Fr::one(),
             cursor: p.cursor(),
             sugar: 2,
@@ -888,14 +888,14 @@ mod tests {
             // Reference: Poly::add via the geobucket-friendly merge.
             let want = p.add(&q, &r);
             let want_terms: Vec<(Fr, Monomial)> =
-                want.iter().map(|(c, m)| (c, m.clone())).collect();
+                want.iter().map(|(c, m)| (c, *m)).collect();
 
             // Heap reducer: 1*p + 1*q.
             let one = Monomial::one(&r);
             let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
             h.push_reducer(Reducer {
                 poly: &p,
-                multiplier: one.clone(),
+                multiplier: one,
                 coeff: Fr::one(),
                 cursor: p.cursor(),
                 sugar: 0,
@@ -928,7 +928,7 @@ mod tests {
             if current.is_zero() {
                 return current;
             }
-            let lm = current.leading().unwrap().1.clone();
+            let lm = *current.leading().unwrap().1;
             let lc = current.lm_coeff();
 
             // Find the first basis element whose lm divides current's lm.
@@ -945,7 +945,7 @@ mod tests {
                     if working.is_zero() {
                         break;
                     }
-                    let lm2 = working.leading().unwrap().1.clone();
+                    let lm2 = *working.leading().unwrap().1;
                     let lc2 = working.lm_coeff();
                     let new_idx = basis.iter().position(|g| {
                         !g.is_zero() && g.leading().unwrap().1.divides(&lm2, ring)
@@ -1187,7 +1187,7 @@ mod tests {
         assert_eq!(h.sugar(), 7);
         h.push_reducer(Reducer {
             poly: &p,
-            multiplier: one.clone(),
+            multiplier: one,
             coeff: Fr::one(),
             cursor: p.cursor(),
             sugar: 3,

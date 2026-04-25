@@ -74,7 +74,7 @@ fn normal_form(p: &Poly<Fr>, gb: &[Poly<Fr>], ring: &Ring<Fr>) -> Poly<Fr> {
         }
         let (c, m) = {
             let (c, m) = cur.leading().expect("nonzero");
-            (c, m.clone())
+            (c, *m)
         };
         for s in gb {
             let (s_c, s_m) = s.leading().expect("gb element nonzero");
@@ -87,7 +87,7 @@ fn normal_form(p: &Poly<Fr>, gb: &[Poly<Fr>], ring: &Ring<Fr>) -> Poly<Fr> {
             }
         }
         // Leader has no divisor. Try to reduce non-leading terms.
-        let terms: Vec<(Fr, Monomial)> = cur.iter().map(|(c, m)| (c, m.clone())).collect();
+        let terms: Vec<(Fr, Monomial)> = cur.iter().map(|(c, m)| (c, *m)).collect();
         let mut made_progress = false;
         let mut rebuilt = vec![];
         for (c, m) in terms {
@@ -99,10 +99,10 @@ fn normal_form(p: &Poly<Fr>, gb: &[Poly<Fr>], ring: &Ring<Fr>) -> Poly<Fr> {
                     let inv = Fr::inverse(&s_c).expect("inv");
                     let coeff = c * inv;
                     // single-term working poly
-                    let t = Poly::monomial(ring, c, m.clone());
+                    let t = Poly::monomial(ring, c, m);
                     let r = t.sub_mul_term(coeff, &mult, s, ring);
                     for (rc, rm) in r.iter() {
-                        rebuilt.push((rc, rm.clone()));
+                        rebuilt.push((rc, *rm));
                     }
                     reduced = true;
                     made_progress = true;

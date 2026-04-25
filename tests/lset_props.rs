@@ -71,7 +71,7 @@ proptest! {
         for op in &ops {
             match op.clone() {
                 Op::Insert { i, j, sugar } => {
-                    let pair = Pair::new(i, j, lcm.clone(), sugar, arrival);
+                    let pair = Pair::new(i, j, lcm, sugar, arrival);
                     arrival += 1;
                     l.insert(pair);
                 }

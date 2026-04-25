@@ -3128,6 +3128,113 @@ None of these are blockers for embedding ark-gb into zippel.
 
 ---
 
+## ADR-020: Phase J — `Monomial: Copy` refactor + rejected `sub_mul_term` cache
+
+**Status:** Accepted (J2 refactor) / Rejected (J1 cache)
+**Date:** 2026-04-25
+
+### Context
+
+Phase I (ADR-019) banked the validate fast-path (-82 % on
+`gb_validate_katsura/5`) but left compute_gb with `Fr` arithmetic
+saturating ~50 % of self-time. ADR-019's "What's next" listed two
+candidate further iterations on compute_gb:
+
+1. **J1**: hoist `m.mul(&q_m[j], ring)` out of `Poly::sub_mul_term`'s
+   two-pointer merge loop so consecutive `Greater` iterations reuse
+   the cached `m * q_m[j]` instead of recomputing it.
+2. **J2**: derive `Copy` on `Monomial`. The struct is 48 bytes of
+   plain old data (4 × u64 packed exponents + u64 SEV + u32 total
+   degree + u32 component); `derive(Clone)` already boiled down to
+   field-wise memcpy, so promoting to `Copy` is semantically identical
+   and lets `clippy --fix` strip ~47 explicit `.clone()` calls across
+   the crate.
+
+### J1 — `sub_mul_term` lazy cache (REJECTED)
+
+Implementation: introduced `mq_mon: Option<Monomial>` outside the
+loop, refreshed only when `j` advances; pushed-on-Less via
+`mq_mon.take()` to elide the clone.
+
+Bench (criterion `--quick`, `RUSTFLAGS=-C target-cpu=native`):
+
+```
+                       after-i3   after-j1    Δ
+gb_katsura_grevlex/5    2.84 ms    3.62 ms   +27 %  ✗
+gb_cyclic_grevlex/5     4.17 ms    9.17 ms  +120 %  ✗
+gb_cyclic_elim/5       11.75 ms   21.06 ms   +79 %  ✗
+gb_validate_cyclic/5    8.89 ms    7.75 ms   −13 %  ≈
+```
+
+Rejected. The `Option<Monomial>` discriminant + `take()`/`unwrap()`
+chain costs more than the saved `Monomial::mul` (which I1's profile
+already showed below the 0.5 % cutoff — `Monomial::mul` is not in
+the top-12 self-time list). The `--quick` numbers exaggerated the
+hit (true regression on a solid bench is ~0 % within noise on
+master vs +99 % on this branch under a noisy reference baseline);
+even charitably read it does not move the needle and increases the
+maintenance surface.
+
+Reverted before commit.
+
+### J2 — `Monomial: Copy` (ADOPTED as refactor)
+
+Promoted the derive list from `Clone, Debug` to `Clone, Copy, Debug`.
+Ran `cargo clippy --tests --benches --examples --fix` to strip
+`clone_on_copy` warnings: 47 explicit `.clone()` calls across 18
+files became `*ref` (when called through a reference) or direct
+indexing of a `&[Monomial]` slot (`s_m[i]` instead of
+`s_m[i].clone()`).
+
+Solid bench (criterion 10-sample, 8 s measurement,
+`RUSTFLAGS=-C target-cpu=native`, baseline `solid-master` pinned on
+master HEAD before this change):
+
+```
+gb_cyclic_grevlex/5: 9.47 ms  ->  9.70 ms   change +3.6 %, p = 0.29
+```
+
+Within noise (p > 0.05). Adopted as a **refactor**, not a perf claim:
+
+- Code quality: `clone()` calls in hot loops no longer surface in
+  profiles or call graphs.
+- Ergonomics: callers can pass `Monomial` by value without thinking
+  about cloning (consistent with `Field + Copy` everywhere else).
+- No semantic change: `derive(Clone)` field-wise memcpy is identical
+  to `derive(Copy)` field-wise memcpy.
+
+187 tests pass. Clippy clean.
+
+### Decision
+
+Adopt J2 (refactor, perf-neutral). Reject J1 (perf-negative,
+semantically inert). Close Phase J.
+
+### What's left for compute_gb
+
+The I1 profile bounded the obvious wins: ~27 % `sub_mm_mult_qq`,
+~25 % `Fr::mul_assign`, ~10 % `KBucket::leading`, ~6 %
+`Monomial::cmp`. These are intrinsic costs of the algorithm at this
+field size; further wins require structural changes (F4-style block
+linear algebra, ring-specialised codegen à la Singular's
+`p_Minus_mm_Mult_qq__T.cc` length-dispatched templates, or
+allocator pooling). Those are out of scope for this fork.
+
+For cryptographic protocol use (e.g. zippel), the validate fast-path
+from Phase I is the practically dominant win — Gröbner-basis
+*verification* is what runs on the verifier, and that path is now
+~5–8× faster than at the start of Phase H.
+
+### References
+
+- I1 profile (ADR-019): top-12 self-time on Cyclic-5/DegRevLex.
+- ADR-018 (mul overflow elision) — predecessor that documents the
+  intrinsic Singular gap.
+- `solid-master` criterion baseline: pinned at master HEAD before
+  J2.
+
+---
+
 ## How to add a new ADR
 
 1. Pick the next number. Don't reuse retired numbers.

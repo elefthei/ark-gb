@@ -158,9 +158,9 @@ mod tests {
         let r = mk_ring(3);
         let l = lcm_mono(&r, &[1, 1, 0]);
         let mut h = BinaryHeap::new();
-        h.push(Reverse(Pair::new(0, 1, l.clone(), 7, 0)));
-        h.push(Reverse(Pair::new(0, 2, l.clone(), 3, 1)));
-        h.push(Reverse(Pair::new(1, 2, l.clone(), 5, 2)));
+        h.push(Reverse(Pair::new(0, 1, l, 7, 0)));
+        h.push(Reverse(Pair::new(0, 2, l, 3, 1)));
+        h.push(Reverse(Pair::new(1, 2, l, 5, 2)));
         let first = h.pop().unwrap().0;
         assert_eq!(first.sugar, 3);
         let second = h.pop().unwrap().0;
@@ -174,9 +174,9 @@ mod tests {
         let r = mk_ring(3);
         let l = lcm_mono(&r, &[1, 1, 0]);
         let mut h = BinaryHeap::new();
-        h.push(Reverse(Pair::new(0, 3, l.clone(), 5, 10)));
-        h.push(Reverse(Pair::new(0, 2, l.clone(), 5, 5)));
-        h.push(Reverse(Pair::new(0, 4, l.clone(), 5, 20)));
+        h.push(Reverse(Pair::new(0, 3, l, 5, 10)));
+        h.push(Reverse(Pair::new(0, 2, l, 5, 5)));
+        h.push(Reverse(Pair::new(0, 4, l, 5, 20)));
         let a = h.pop().unwrap().0;
         assert_eq!(a.arrival, 5);
         let b = h.pop().unwrap().0;
