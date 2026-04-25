@@ -7,14 +7,15 @@
 //!
 //! Run with `cargo run --release --example sanity`.
 
-use ark_gb::{Field, MonoOrder, Monomial, Poly, Ring};
+use ark_bls12_381::Fr;
+use ark_gb::{MonoOrder, Monomial, Poly, Ring};
 use std::time::Instant;
 
-fn build_ring() -> Ring {
-    Ring::new(10, MonoOrder::DegRevLex, Field::new(32003).unwrap()).unwrap()
+fn build_ring() -> Ring<Fr> {
+    Ring::<Fr>::new(10, MonoOrder::DegRevLex).unwrap()
 }
 
-fn random_poly(ring: &Ring, nterms: usize, seed: u64) -> Poly {
+fn random_poly(ring: &Ring<Fr>, nterms: usize, seed: u64) -> Poly<Fr> {
     let n = ring.nvars() as usize;
     let mut s = seed;
     let mut next = || {
@@ -29,7 +30,8 @@ fn random_poly(ring: &Ring, nterms: usize, seed: u64) -> Poly {
         for slot in exps.iter_mut() {
             *slot = ((next() >> 32) as u32) % 6;
         }
-        let c = ((next() >> 32) as u32) % (ring.field().p() - 1) + 1;
+        let c_u64 = (next() % (u32::MAX as u64 - 1)) + 1;
+        let c = Fr::from(c_u64);
         let m = Monomial::from_exponents(ring, &exps).unwrap();
         pairs.push((c, m));
     }
@@ -60,7 +62,7 @@ fn main() {
 
     // sub_mul_term
     let m = Monomial::from_exponents(&ring, &[1, 0, 1, 0, 0, 2, 0, 0, 1, 0]).unwrap();
-    let c = 7u32;
+    let c = Fr::from(7u64);
     let q = random_poly(&ring, 150, 0xdead);
     let p0 = random_poly(&ring, 300, 0xbeef);
     let t0 = Instant::now();

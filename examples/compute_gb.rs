@@ -1,8 +1,8 @@
 //! Minimal usage example for `ark_gb::compute_gb`.
 //!
-//! Builds the cyclic-3 ideal in `Z/32003[x, y, z]` under degrevlex,
-//! runs [`ark_gb::compute_gb`], and prints the reduced Gröbner
-//! basis in a Singular-ish textual form.
+//! Builds the cyclic-3 ideal in `Fr[x, y, z]` (BLS12-381 scalar field)
+//! under degrevlex, runs [`ark_gb::compute_gb`], and prints the reduced
+//! Gröbner basis in a Singular-ish textual form.
 //!
 //! Also prints timings for cyclic-3, cyclic-4, and cyclic-5 so the
 //! example doubles as the task's performance-sanity run:
@@ -14,18 +14,19 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use ark_bls12_381::Fr;
+use ark_ff::{One, Zero};
 use ark_gb::compute_gb;
-use ark_gb::field::{Coeff, Field};
 use ark_gb::monomial::Monomial;
 use ark_gb::ordering::MonoOrder;
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 
-fn mk_ring(nvars: u32, p: u32) -> Arc<Ring> {
-    Arc::new(Ring::new(nvars, MonoOrder::DegRevLex, Field::new(p).unwrap()).unwrap())
+fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
+    Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
 }
 
-fn mono(r: &Ring, e: &[u32]) -> Monomial {
+fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
     Monomial::from_exponents(r, e).unwrap()
 }
 
@@ -33,43 +34,37 @@ fn mono(r: &Ring, e: &[u32]) -> Monomial {
 /// variable names. Good enough for human inspection; not a parser-
 /// compatible round-trip (see the fixture parser in the tests for
 /// that).
-fn poly_to_string(p: &Poly, ring: &Ring, var_names: &[&str]) -> String {
+fn poly_to_string(p: &Poly<Fr>, ring: &Ring<Fr>, var_names: &[&str]) -> String {
     if p.is_zero() {
         return "0".to_string();
     }
-    let field_p = ring.field().p();
     let mut out = String::new();
     for (i, (c, m)) in p.iter().enumerate() {
-        let (sign, mag) = if c > field_p / 2 {
-            (-1i64, field_p - c)
-        } else {
-            (1i64, c)
-        };
+        let is_neg_one = c == -Fr::one();
+        let is_one = c == Fr::one();
         if i == 0 {
-            if sign < 0 {
+            if is_neg_one {
                 out.push('-');
             }
-        } else if sign < 0 {
+        } else if is_neg_one {
             out.push('-');
         } else {
             out.push('+');
         }
-        // Check if monomial is 1 (all exponents zero).
+
         let exps = m.exponents(ring);
-        let is_one = exps.iter().all(|&e| e == 0);
-        if mag != 1 || is_one {
-            out.push_str(&mag.to_string());
+        let mono_is_one = exps.iter().all(|&e| e == 0);
+        let print_coeff = (!is_one && !is_neg_one) || mono_is_one;
+        if print_coeff {
+            out.push_str(&format!("{}", c));
         }
-        if !is_one {
+        if !mono_is_one {
             let mut first_var = true;
             for (vi, &e) in exps.iter().enumerate() {
                 if e == 0 {
                     continue;
                 }
-                // Put an explicit `*` before any variable factor
-                // that has something preceding it on this term:
-                // either the printed coefficient, or a prior var.
-                if !first_var || mag != 1 {
+                if !first_var || print_coeff {
                     out.push('*');
                 }
                 out.push_str(var_names[vi]);
@@ -81,10 +76,11 @@ fn poly_to_string(p: &Poly, ring: &Ring, var_names: &[&str]) -> String {
             }
         }
     }
+    let _ = Fr::zero(); // keep Zero import used
     out
 }
 
-fn run_cyclic(ring: Arc<Ring>, name: &str, input: Vec<Poly>, var_names: &[&str]) {
+fn run_cyclic(ring: Arc<Ring<Fr>>, name: &str, input: Vec<Poly<Fr>>, var_names: &[&str]) {
     println!("=== {} ===", name);
     let t = Instant::now();
     let gb = compute_gb(Arc::clone(&ring), input);
@@ -98,114 +94,117 @@ fn run_cyclic(ring: Arc<Ring>, name: &str, input: Vec<Poly>, var_names: &[&str])
 }
 
 fn cyclic3() {
-    let r = mk_ring(3, 32003);
+    let r = mk_ring(3);
     let m = |e: &[u32]| mono(&r, e);
-    let p_minus_one: Coeff = 32002;
+    let one = Fr::one();
+    let neg_one = -Fr::one();
     let gens = vec![
         Poly::from_terms(
             &r,
-            vec![(1, m(&[1, 0, 0])), (1, m(&[0, 1, 0])), (1, m(&[0, 0, 1]))],
+            vec![(one, m(&[1, 0, 0])), (one, m(&[0, 1, 0])), (one, m(&[0, 0, 1]))],
         ),
         Poly::from_terms(
             &r,
-            vec![(1, m(&[1, 1, 0])), (1, m(&[0, 1, 1])), (1, m(&[1, 0, 1]))],
+            vec![(one, m(&[1, 1, 0])), (one, m(&[0, 1, 1])), (one, m(&[1, 0, 1]))],
         ),
-        Poly::from_terms(&r, vec![(1, m(&[1, 1, 1])), (p_minus_one, m(&[0, 0, 0]))]),
+        Poly::from_terms(&r, vec![(one, m(&[1, 1, 1])), (neg_one, m(&[0, 0, 0]))]),
     ];
-    run_cyclic(r, "cyclic-3 over F_32003", gens, &["x", "y", "z"]);
+    run_cyclic(r, "cyclic-3 over Fr (BLS12-381)", gens, &["x", "y", "z"]);
 }
 
 fn cyclic4() {
-    let r = mk_ring(4, 32003);
+    let r = mk_ring(4);
     let m = |e: &[u32]| mono(&r, e);
-    let p_minus_one: Coeff = 32002;
+    let one = Fr::one();
+    let neg_one = -Fr::one();
     let gens = vec![
         Poly::from_terms(
             &r,
             vec![
-                (1, m(&[1, 0, 0, 0])),
-                (1, m(&[0, 1, 0, 0])),
-                (1, m(&[0, 0, 1, 0])),
-                (1, m(&[0, 0, 0, 1])),
+                (one, m(&[1, 0, 0, 0])),
+                (one, m(&[0, 1, 0, 0])),
+                (one, m(&[0, 0, 1, 0])),
+                (one, m(&[0, 0, 0, 1])),
             ],
         ),
         Poly::from_terms(
             &r,
             vec![
-                (1, m(&[1, 1, 0, 0])),
-                (1, m(&[0, 1, 1, 0])),
-                (1, m(&[0, 0, 1, 1])),
-                (1, m(&[1, 0, 0, 1])),
+                (one, m(&[1, 1, 0, 0])),
+                (one, m(&[0, 1, 1, 0])),
+                (one, m(&[0, 0, 1, 1])),
+                (one, m(&[1, 0, 0, 1])),
             ],
         ),
         Poly::from_terms(
             &r,
             vec![
-                (1, m(&[1, 1, 1, 0])),
-                (1, m(&[0, 1, 1, 1])),
-                (1, m(&[1, 0, 1, 1])),
-                (1, m(&[1, 1, 0, 1])),
+                (one, m(&[1, 1, 1, 0])),
+                (one, m(&[0, 1, 1, 1])),
+                (one, m(&[1, 0, 1, 1])),
+                (one, m(&[1, 1, 0, 1])),
             ],
         ),
         Poly::from_terms(
             &r,
-            vec![(1, m(&[1, 1, 1, 1])), (p_minus_one, m(&[0, 0, 0, 0]))],
+            vec![(one, m(&[1, 1, 1, 1])), (neg_one, m(&[0, 0, 0, 0]))],
         ),
     ];
-    run_cyclic(r, "cyclic-4 over F_32003", gens, &["a", "b", "c", "d"]);
+    run_cyclic(r, "cyclic-4 over Fr (BLS12-381)", gens, &["a", "b", "c", "d"]);
 }
 
 fn cyclic5() {
-    let r = mk_ring(5, 32003);
+    let r = mk_ring(5);
     let m = |e: &[u32]| mono(&r, e);
-    let p_minus_one: Coeff = 32002;
+    let one = Fr::one();
+    let neg_one = -Fr::one();
     let gens = vec![
         Poly::from_terms(
             &r,
             vec![
-                (1, m(&[1, 0, 0, 0, 0])),
-                (1, m(&[0, 1, 0, 0, 0])),
-                (1, m(&[0, 0, 1, 0, 0])),
-                (1, m(&[0, 0, 0, 1, 0])),
-                (1, m(&[0, 0, 0, 0, 1])),
+                (one, m(&[1, 0, 0, 0, 0])),
+                (one, m(&[0, 1, 0, 0, 0])),
+                (one, m(&[0, 0, 1, 0, 0])),
+                (one, m(&[0, 0, 0, 1, 0])),
+                (one, m(&[0, 0, 0, 0, 1])),
             ],
         ),
         Poly::from_terms(
             &r,
             vec![
-                (1, m(&[1, 1, 0, 0, 0])),
-                (1, m(&[0, 1, 1, 0, 0])),
-                (1, m(&[0, 0, 1, 1, 0])),
-                (1, m(&[0, 0, 0, 1, 1])),
-                (1, m(&[1, 0, 0, 0, 1])),
+                (one, m(&[1, 1, 0, 0, 0])),
+                (one, m(&[0, 1, 1, 0, 0])),
+                (one, m(&[0, 0, 1, 1, 0])),
+                (one, m(&[0, 0, 0, 1, 1])),
+                (one, m(&[1, 0, 0, 0, 1])),
             ],
         ),
         Poly::from_terms(
             &r,
             vec![
-                (1, m(&[1, 1, 1, 0, 0])),
-                (1, m(&[0, 1, 1, 1, 0])),
-                (1, m(&[0, 0, 1, 1, 1])),
-                (1, m(&[1, 0, 0, 1, 1])),
-                (1, m(&[1, 1, 0, 0, 1])),
+                (one, m(&[1, 1, 1, 0, 0])),
+                (one, m(&[0, 1, 1, 1, 0])),
+                (one, m(&[0, 0, 1, 1, 1])),
+                (one, m(&[1, 0, 0, 1, 1])),
+                (one, m(&[1, 1, 0, 0, 1])),
             ],
         ),
         Poly::from_terms(
             &r,
             vec![
-                (1, m(&[1, 1, 1, 1, 0])),
-                (1, m(&[0, 1, 1, 1, 1])),
-                (1, m(&[1, 0, 1, 1, 1])),
-                (1, m(&[1, 1, 0, 1, 1])),
-                (1, m(&[1, 1, 1, 0, 1])),
+                (one, m(&[1, 1, 1, 1, 0])),
+                (one, m(&[0, 1, 1, 1, 1])),
+                (one, m(&[1, 0, 1, 1, 1])),
+                (one, m(&[1, 1, 0, 1, 1])),
+                (one, m(&[1, 1, 1, 0, 1])),
             ],
         ),
         Poly::from_terms(
             &r,
-            vec![(1, m(&[1, 1, 1, 1, 1])), (p_minus_one, m(&[0, 0, 0, 0, 0]))],
+            vec![(one, m(&[1, 1, 1, 1, 1])), (neg_one, m(&[0, 0, 0, 0, 0]))],
         ),
     ];
-    run_cyclic(r, "cyclic-5 over F_32003", gens, &["a", "b", "c", "d", "e"]);
+    run_cyclic(r, "cyclic-5 over Fr (BLS12-381)", gens, &["a", "b", "c", "d", "e"]);
 }
 
 fn main() {

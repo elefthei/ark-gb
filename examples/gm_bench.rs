@@ -11,14 +11,15 @@
 
 use std::time::Instant;
 
+use ark_bls12_381::Fr;
+use ark_ff::One;
 use ark_gb::gm;
-use ark_gb::{Coeff, Field, LSet, MonoOrder, Monomial, Pair, Poly, Ring, SBasis};
+use ark_gb::{LSet, MonoOrder, Monomial, Pair, Poly, Ring, SBasis};
 
-const P: u32 = 32003;
 const NVARS: u32 = 6;
 
-fn mk_ring() -> Ring {
-    Ring::new(NVARS, MonoOrder::DegRevLex, Field::new(P).unwrap()).unwrap()
+fn mk_ring() -> Ring<Fr> {
+    Ring::<Fr>::new(NVARS, MonoOrder::DegRevLex).unwrap()
 }
 
 /// A simple LCG so the example stays dependency-free.
@@ -36,7 +37,7 @@ impl Lcg {
     }
 }
 
-fn random_lm(r: &Ring, rng: &mut Lcg) -> Monomial {
+fn random_lm(r: &Ring<Fr>, rng: &mut Lcg) -> Monomial {
     let n = r.nvars() as usize;
     let mut exps = vec![0u32; n];
     // Sparse: 2 variables with small exponents.
@@ -53,15 +54,15 @@ fn random_lm(r: &Ring, rng: &mut Lcg) -> Monomial {
 fn bench_enterpairs() {
     let r = mk_ring();
     let mut rng = Lcg(0xdead_beef_dead_beef);
-    let mut s = SBasis::new();
+    let mut s: SBasis<Fr> = SBasis::new();
     for _ in 0..100 {
         let lm = random_lm(&r, &mut rng);
-        s.insert(&r, Poly::monomial(&r, 1 as Coeff, lm));
+        s.insert(&r, Poly::monomial(&r, Fr::one(), lm));
     }
 
     // Reserve an h to enterpairs against.
     let h_lm = random_lm(&r, &mut rng);
-    let h = Poly::monomial(&r, 1, h_lm);
+    let h = Poly::monomial(&r, Fr::one(), h_lm);
     let h_idx = s.insert(&r, h.clone()) as u32;
 
     // Call enterpairs many times on successive fresh LSet so the

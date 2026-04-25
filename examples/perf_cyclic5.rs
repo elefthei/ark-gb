@@ -1,74 +1,76 @@
 //! Long-running cyclic-5 driver, suitable for `perf record`.
 //!
-//! Runs cyclic-5 over F_32003 N times (default 200) under whatever
-//! RUSTGB_THREADS value the environment carries. Prints the mean and
-//! stdev of per-iteration wall time.
+//! Runs cyclic-5 over the BLS12-381 scalar field N times (default 200)
+//! under whatever RUSTGB_THREADS value the environment carries. Prints
+//! the mean and stdev of per-iteration wall time.
 
 use std::sync::Arc;
 use std::time::Instant;
 
+use ark_bls12_381::Fr;
+use ark_ff::One;
 use ark_gb::compute_gb;
-use ark_gb::field::{Coeff, Field};
 use ark_gb::monomial::Monomial;
 use ark_gb::ordering::MonoOrder;
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 
-fn mk_ring(nvars: u32, p: u32) -> Arc<Ring> {
-    Arc::new(Ring::new(nvars, MonoOrder::DegRevLex, Field::new(p).unwrap()).unwrap())
+fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
+    Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
 }
 
-fn mono(r: &Ring, e: &[u32]) -> Monomial {
+fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
     Monomial::from_exponents(r, e).unwrap()
 }
 
-fn cyclic5_input(ring: &Arc<Ring>) -> Vec<Poly> {
+fn cyclic5_input(ring: &Arc<Ring<Fr>>) -> Vec<Poly<Fr>> {
     let m = |e: &[u32]| mono(ring, e);
-    let p_minus_one: Coeff = 32002;
+    let one = Fr::one();
+    let neg_one = -Fr::one();
     vec![
         Poly::from_terms(
             ring,
             vec![
-                (1, m(&[1, 0, 0, 0, 0])),
-                (1, m(&[0, 1, 0, 0, 0])),
-                (1, m(&[0, 0, 1, 0, 0])),
-                (1, m(&[0, 0, 0, 1, 0])),
-                (1, m(&[0, 0, 0, 0, 1])),
+                (one, m(&[1, 0, 0, 0, 0])),
+                (one, m(&[0, 1, 0, 0, 0])),
+                (one, m(&[0, 0, 1, 0, 0])),
+                (one, m(&[0, 0, 0, 1, 0])),
+                (one, m(&[0, 0, 0, 0, 1])),
             ],
         ),
         Poly::from_terms(
             ring,
             vec![
-                (1, m(&[1, 1, 0, 0, 0])),
-                (1, m(&[0, 1, 1, 0, 0])),
-                (1, m(&[0, 0, 1, 1, 0])),
-                (1, m(&[0, 0, 0, 1, 1])),
-                (1, m(&[1, 0, 0, 0, 1])),
+                (one, m(&[1, 1, 0, 0, 0])),
+                (one, m(&[0, 1, 1, 0, 0])),
+                (one, m(&[0, 0, 1, 1, 0])),
+                (one, m(&[0, 0, 0, 1, 1])),
+                (one, m(&[1, 0, 0, 0, 1])),
             ],
         ),
         Poly::from_terms(
             ring,
             vec![
-                (1, m(&[1, 1, 1, 0, 0])),
-                (1, m(&[0, 1, 1, 1, 0])),
-                (1, m(&[0, 0, 1, 1, 1])),
-                (1, m(&[1, 0, 0, 1, 1])),
-                (1, m(&[1, 1, 0, 0, 1])),
+                (one, m(&[1, 1, 1, 0, 0])),
+                (one, m(&[0, 1, 1, 1, 0])),
+                (one, m(&[0, 0, 1, 1, 1])),
+                (one, m(&[1, 0, 0, 1, 1])),
+                (one, m(&[1, 1, 0, 0, 1])),
             ],
         ),
         Poly::from_terms(
             ring,
             vec![
-                (1, m(&[1, 1, 1, 1, 0])),
-                (1, m(&[0, 1, 1, 1, 1])),
-                (1, m(&[1, 0, 1, 1, 1])),
-                (1, m(&[1, 1, 0, 1, 1])),
-                (1, m(&[1, 1, 1, 0, 1])),
+                (one, m(&[1, 1, 1, 1, 0])),
+                (one, m(&[0, 1, 1, 1, 1])),
+                (one, m(&[1, 0, 1, 1, 1])),
+                (one, m(&[1, 1, 0, 1, 1])),
+                (one, m(&[1, 1, 1, 0, 1])),
             ],
         ),
         Poly::from_terms(
             ring,
-            vec![(1, m(&[1, 1, 1, 1, 1])), (p_minus_one, m(&[0, 0, 0, 0, 0]))],
+            vec![(one, m(&[1, 1, 1, 1, 1])), (neg_one, m(&[0, 0, 0, 0, 0]))],
         ),
     ]
 }
@@ -78,7 +80,7 @@ fn main() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(200);
-    let r = mk_ring(5, 32003);
+    let r = mk_ring(5);
     // Warm-up
     let _ = compute_gb(Arc::clone(&r), cyclic5_input(&r));
 
@@ -103,7 +105,6 @@ fn main() {
         .sum::<f64>()
         / n;
     let stdev = var.sqrt();
-    // sorted for median/min
     let mut sorted = times_us.clone();
     sorted.sort_unstable();
     let median = sorted[sorted.len() / 2];
