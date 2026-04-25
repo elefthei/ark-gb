@@ -102,10 +102,14 @@ impl<F: Field + Copy + Send + Sync> Ring<F> {
         if nvars == 0 || nvars > MAX_VARS {
             return None;
         }
-        // Ordering is an exhaustive match; kept as `match` so future
-        // variants must consciously opt in.
+        // Validate the ordering against nvars.
         match ordering {
             MonoOrder::DegRevLex => {}
+            MonoOrder::Elim { split } => {
+                if split > nvars {
+                    return None;
+                }
+            }
         }
         let (overflow_mask, cmp_flip_mask) = compute_packing_masks(nvars);
         Some(Self {

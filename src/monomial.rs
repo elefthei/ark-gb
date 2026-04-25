@@ -380,7 +380,40 @@ impl Monomial {
     pub fn cmp<F: Field + Copy + Send + Sync>(&self, other: &Self, ring: &Ring<F>) -> Ordering {
         match ring.ordering() {
             MonoOrder::DegRevLex => self.cmp_degrevlex(other, ring),
+            MonoOrder::Elim { split } => self.cmp_elim(other, ring, split as usize),
         }
+    }
+
+    /// Block elimination order: compare block-weight on variables
+    /// `0 .. split`, then fall back on degrevlex for ties.
+    ///
+    /// The block weight is computed by summing the per-variable
+    /// exponent bytes through `exponent_raw`. This is `O(split)`
+    /// per compare, vs `O(1)` for `cmp_degrevlex`'s 4-word lex
+    /// scan, so `Elim` is slower than `DegRevLex` on hot paths.
+    /// Acceptable for the elimination use case where the user
+    /// has already opted out of the fast graded path.
+    fn cmp_elim<F: Field + Copy + Send + Sync>(
+        &self,
+        other: &Self,
+        ring: &Ring<F>,
+        split: usize,
+    ) -> Ordering {
+        let n = ring.nvars() as usize;
+        // Block weight = sum of exponents in vars 0 .. split.
+        // With split <= nvars <= 31 and per-var exponent <= 127,
+        // the sum fits in u32 trivially.
+        let mut wa: u32 = 0;
+        let mut wb: u32 = 0;
+        for i in 0..split {
+            wa += self.exponent_raw(n, i);
+            wb += other.exponent_raw(n, i);
+        }
+        match wa.cmp(&wb) {
+            Ordering::Equal => {}
+            ord => return ord,
+        }
+        self.cmp_degrevlex(other, ring)
     }
 
     /// Degrevlex comparison.
