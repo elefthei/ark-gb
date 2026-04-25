@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use crate::field::Coeff;
+use crate::field::Field;
 use crate::kbucket::KBucket;
 use crate::monomial::Monomial;
 use crate::pair::Pair;
@@ -29,13 +29,13 @@ use crate::ring::Ring;
 /// single-owner). A later parallel driver passes `LObject`s between
 /// workers by move.
 #[derive(Debug)]
-pub struct LObject {
+pub struct LObject<F: Field + Copy> {
     /// The geobucket accumulator.
-    bucket: KBucket,
+    bucket: KBucket<F>,
     /// Cached leading sev. 0 when the LObject is zero.
     lm_sev: u64,
     /// Cached leading coeff. 0 when zero.
-    lm_coeff: Coeff,
+    lm_coeff: F,
     /// Cached leading total degree. 0 when zero.
     lm_deg: u32,
     /// Cached is_zero flag (snapshot of the last `refresh`).
@@ -44,21 +44,21 @@ pub struct LObject {
     sugar: u32,
 }
 
-impl LObject {
+impl<F: Field + Copy> LObject<F> {
     /// Build an `LObject` from an existing `Poly` with sugar seeded
     /// from the poly's leading total degree.
-    pub fn from_poly(ring: Arc<Ring>, p: Poly) -> Self {
+    pub fn from_poly(ring: Arc<Ring<F>>, p: Poly<F>) -> Self {
         let sugar = p.lm_deg();
         Self::from_poly_with_sugar(ring, p, sugar)
     }
 
     /// Build an `LObject` from an existing `Poly` with an explicit
     /// sugar value.
-    pub fn from_poly_with_sugar(ring: Arc<Ring>, p: Poly, sugar: u32) -> Self {
+    pub fn from_poly_with_sugar(ring: Arc<Ring<F>>, p: Poly<F>, sugar: u32) -> Self {
         let mut o = Self {
             bucket: KBucket::from_poly(ring, p),
             lm_sev: 0,
-            lm_coeff: 0,
+            lm_coeff: F::zero(),
             lm_deg: 0,
             is_zero: false,
             sugar,
@@ -79,7 +79,7 @@ impl LObject {
     /// empty (single-term inputs). Otherwise an `LObject` is
     /// returned; the caller is responsible for running divisor
     /// reductions on it.
-    pub fn from_spoly(ring: Arc<Ring>, s_i: &Poly, s_j: &Poly, pair: &Pair) -> Option<Self> {
+    pub fn from_spoly(ring: Arc<Ring<F>>, s_i: &Poly<F>, s_j: &Poly<F>, pair: &Pair) -> Option<Self> {
         debug_assert!(!s_i.is_zero() && !s_j.is_zero());
         let (_, lm_i) = s_i.leading()?;
         let (_, lm_j) = s_j.leading()?;
@@ -96,7 +96,7 @@ impl LObject {
 
         // Start the bucket with c_j * m_i * s_i (i.e. subtract
         // -c_j * m_i * s_i).
-        let neg_c_j = ring.field().neg(c_j);
+        let neg_c_j = -c_j;
         let mut bucket = KBucket::new(Arc::clone(&ring));
         bucket.minus_m_mult_p(&m_i, neg_c_j, s_i);
         // Then subtract c_i * m_j * s_j.
@@ -105,7 +105,7 @@ impl LObject {
         let mut o = Self {
             bucket,
             lm_sev: 0,
-            lm_coeff: 0,
+            lm_coeff: F::zero(),
             lm_deg: 0,
             is_zero: false,
             sugar,
@@ -123,7 +123,7 @@ impl LObject {
         match self.bucket.leading() {
             None => {
                 self.lm_sev = 0;
-                self.lm_coeff = 0;
+                self.lm_coeff = F::zero();
                 self.lm_deg = 0;
                 self.is_zero = true;
             }
@@ -144,7 +144,7 @@ impl LObject {
 
     /// Cached leading coeff. 0 when zero.
     #[inline]
-    pub fn lm_coeff(&self) -> Coeff {
+    pub fn lm_coeff(&self) -> F {
         self.lm_coeff
     }
 
@@ -178,37 +178,37 @@ impl LObject {
 
     /// Mutable access to the underlying bucket for reduction steps.
     #[inline]
-    pub fn bucket_mut(&mut self) -> &mut KBucket {
+    pub fn bucket_mut(&mut self) -> &mut KBucket<F> {
         &mut self.bucket
     }
 
     /// Borrow the underlying ring (via the bucket).
     #[inline]
-    pub fn ring(&self) -> &Arc<Ring> {
+    pub fn ring(&self) -> &Arc<Ring<F>> {
         self.bucket.ring()
     }
 
     /// Read the bucket's leading term, refreshing the cache. Returns
     /// `None` when the LObject is zero.
-    pub fn leading(&mut self) -> Option<(Coeff, &Monomial)> {
+    pub fn leading(&mut self) -> Option<(F, &Monomial)> {
         self.bucket.leading()
     }
 
     /// Extract the current leading term, shrinking the bucket by
     /// that term. Cache is cleared; call `refresh` before reading
     /// cached fields again.
-    pub fn extract_leading(&mut self) -> Option<(Coeff, Monomial)> {
+    pub fn extract_leading(&mut self) -> Option<(F, Monomial)> {
         let out = self.bucket.extract_leading();
         // Cache is now stale; mark as such. The driver will refresh.
         self.lm_sev = 0;
-        self.lm_coeff = 0;
+        self.lm_coeff = F::zero();
         self.lm_deg = 0;
         self.is_zero = false; // unknown; caller must refresh
         out
     }
 
     /// Finalise: consume the LObject and return its polynomial value.
-    pub fn into_poly(self) -> Poly {
+    pub fn into_poly(self) -> Poly<F> {
         self.bucket.into_poly()
     }
 
@@ -221,68 +221,69 @@ impl LObject {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::Field;
+    use ark_bls12_381::Fr;
+    use ark_ff::One;
     use crate::ordering::MonoOrder;
 
-    fn mk_ring(nvars: u32, p: u32) -> Arc<Ring> {
-        Arc::new(Ring::new(nvars, MonoOrder::DegRevLex, Field::new(p).unwrap()).unwrap())
+    fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
+        Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
     }
 
-    fn mono(r: &Ring, e: &[u32]) -> Monomial {
+    fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
         Monomial::from_exponents(r, e).unwrap()
     }
 
     #[test]
     fn from_poly_has_matching_lm() {
-        let r = mk_ring(3, 13);
+        let r = mk_ring(3);
         let p = Poly::from_terms(
             &r,
-            vec![(3, mono(&r, &[2, 1, 0])), (7, mono(&r, &[1, 0, 1]))],
+            vec![(Fr::from(3u64), mono(&r, &[2, 1, 0])), (Fr::from(7u64), mono(&r, &[1, 0, 1]))],
         );
         let p_sev = p.lm_sev();
         let o = LObject::from_poly(Arc::clone(&r), p);
         assert_eq!(o.lm_sev(), p_sev);
-        assert_eq!(o.lm_coeff(), 3);
+        assert_eq!(o.lm_coeff(), Fr::from(3u64));
         assert!(!o.is_zero());
     }
 
     #[test]
     fn from_spoly_cancels_leading() {
-        // s_i = x*y - 1,  s_j = x*z - 2 (both in F_13)
+        // s_i = x*y - 1,  s_j = x*z - 2
         // lcm = x*y*z, m_i = z, m_j = y
         // S = c_j * m_i * s_i - c_i * m_j * s_j = z*(xy-1) - y*(xz-2) = -z + 2y
-        let r = mk_ring(3, 13);
+        let r = mk_ring(3);
         let s_i = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 1, 0])),
-                (12, mono(&r, &[0, 0, 0])), // -1 mod 13
+                (Fr::from(1u64), mono(&r, &[1, 1, 0])),
+                (-Fr::one(), mono(&r, &[0, 0, 0])),
             ],
         );
         let s_j = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 0, 1])),
-                (11, mono(&r, &[0, 0, 0])), // -2 mod 13
+                (Fr::from(1u64), mono(&r, &[1, 0, 1])),
+                (-Fr::from(2u64), mono(&r, &[0, 0, 0])),
             ],
         );
         let lcm = mono(&r, &[1, 1, 1]);
         let pair = Pair::new(0, 1, lcm, 3, 0);
         let mut o = LObject::from_spoly(Arc::clone(&r), &s_i, &s_j, &pair).unwrap();
-        // Expected: -z + 2y = 12z + 2y; leading in degrevlex (total
+        // Expected: -z + 2y; leading in degrevlex (total
         // deg 1 tied, larger-index variable smaller exponent wins)
         // is 2y (exponent of z is 0 < 1).
         let got = o.bucket_mut().leading().unwrap();
-        assert_eq!(got.0, 2);
+        assert_eq!(got.0, Fr::from(2u64));
         assert_eq!(*got.1, mono(&r, &[0, 1, 0]));
     }
 
     #[test]
     fn from_spoly_trivial_zero() {
         // s_i = x,  s_j = x -- same poly.  S = x*x - x*x = 0.
-        let r = mk_ring(2, 13);
-        let s_i = Poly::monomial(&r, 1, mono(&r, &[1, 0]));
-        let s_j = Poly::monomial(&r, 1, mono(&r, &[1, 0]));
+        let r = mk_ring(2);
+        let s_i = Poly::monomial(&r, Fr::one(), mono(&r, &[1, 0]));
+        let s_j = Poly::monomial(&r, Fr::one(), mono(&r, &[1, 0]));
         let lcm = mono(&r, &[1, 0]);
         let pair = Pair::new(0, 1, lcm, 1, 0);
         assert!(LObject::from_spoly(Arc::clone(&r), &s_i, &s_j, &pair).is_none());
@@ -290,13 +291,13 @@ mod tests {
 
     #[test]
     fn into_poly_round_trips() {
-        let r = mk_ring(3, 13);
+        let r = mk_ring(3);
         let p = Poly::from_terms(
             &r,
             vec![
-                (3, mono(&r, &[2, 1, 0])),
-                (7, mono(&r, &[1, 0, 1])),
-                (1, mono(&r, &[0, 0, 2])),
+                (Fr::from(3u64), mono(&r, &[2, 1, 0])),
+                (Fr::from(7u64), mono(&r, &[1, 0, 1])),
+                (Fr::from(1u64), mono(&r, &[0, 0, 2])),
             ],
         );
         let o = LObject::from_poly(Arc::clone(&r), p.clone());

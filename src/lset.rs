@@ -189,7 +189,10 @@ impl LSet {
     }
 
     /// Debug-only invariant check.
-    pub fn assert_canonical(&self, ring: &crate::ring::Ring) {
+    pub fn assert_canonical<F: ark_ff::Field + Copy + Send + Sync>(
+        &self,
+        ring: &crate::ring::Ring<F>,
+    ) {
         // Every live pair in the heap has a matching by_indices entry.
         // The by_indices hashes are all live (not deleted).
         let mut live_in_heap = 0usize;
@@ -224,16 +227,16 @@ impl LSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::Field;
     use crate::monomial::Monomial;
     use crate::ordering::MonoOrder;
     use crate::ring::Ring;
+    use ark_bls12_381::Fr;
 
-    fn mk_ring(nvars: u32) -> Ring {
-        Ring::new(nvars, MonoOrder::DegRevLex, Field::new(32003).unwrap()).unwrap()
+    fn mk_ring(nvars: u32) -> Ring<Fr> {
+        Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap()
     }
 
-    fn mk_pair(r: &Ring, i: u32, j: u32, sugar: u32, arrival: u64) -> Pair {
+    fn mk_pair(r: &Ring<Fr>, i: u32, j: u32, sugar: u32, arrival: u64) -> Pair {
         let lcm = Monomial::from_exponents(r, &vec![1u32; r.nvars() as usize]).unwrap();
         Pair::new(i, j, lcm, sugar, arrival)
     }

@@ -25,6 +25,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::{Arc, Mutex, RwLock};
 
+use crate::field::Field;
 use crate::lset::LSet;
 use crate::poly::Poly;
 use crate::ring::Ring;
@@ -40,11 +41,11 @@ use crate::ring::Ring;
 ///   reallocates the `Arc<Poly>` slots, but the `Poly` bodies live
 ///   behind `Arc` so the pointers the `Arc`s wrap are stable).
 #[derive(Debug)]
-pub struct SharedSBasis {
+pub struct SharedSBasis<F: Field + Copy + Send + Sync> {
     /// The three parallel arrays, protected by a single RwLock. On
     /// read-heavy workloads (reduction inner loop) many readers
     /// coexist; append takes exclusive.
-    pub inner: RwLock<SharedSBasisInner>,
+    pub inner: RwLock<SharedSBasisInner<F>>,
     /// Redundancy flags. One `AtomicBool` per basis element. Readers
     /// use `load(Relaxed)`; writers use `store(Relaxed)`. The length
     /// of this vector is synchronised with `inner` via the RwLock —
@@ -57,10 +58,10 @@ pub struct SharedSBasis {
 /// The parallel arrays behind `SharedSBasis::inner`. Grouped so a
 /// single RwLock guards their consistency.
 #[derive(Debug, Default)]
-pub struct SharedSBasisInner {
+pub struct SharedSBasisInner<F: Field + Copy + Send + Sync> {
     /// Polynomials, owned via `Arc<Poly>` so a reader can clone-out
     /// a handle and drop the RwLock immediately.
-    pub polys: Vec<Arc<Poly>>,
+    pub polys: Vec<Arc<Poly<F>>>,
     /// Leading short-exponent vectors.
     pub sevs: Vec<u64>,
     /// Leading total degrees.
@@ -69,7 +70,7 @@ pub struct SharedSBasisInner {
     pub arrivals: Vec<u64>,
 }
 
-impl SharedSBasis {
+impl<F: Field + Copy + Send + Sync> SharedSBasis<F> {
     /// Empty basis.
     pub fn new() -> Self {
         Self {
@@ -97,7 +98,7 @@ impl SharedSBasis {
     /// Append `h` to the basis. Returns the index at which `h` was
     /// placed. Takes both write locks in a consistent order
     /// (`inner` first, `redundant` second) to avoid deadlock.
-    pub fn push(&self, h: Arc<Poly>, arrival: u64) -> usize {
+    pub fn push(&self, h: Arc<Poly<F>>, arrival: u64) -> usize {
         let lm_sev = h.lm_sev();
         let lm_deg = h.lm_deg();
         let mut inner = self.inner.write().unwrap();
@@ -114,7 +115,7 @@ impl SharedSBasis {
     /// Read-only snapshot of `(polys, sevs, lm_degs)` up to
     /// `len`-many. The returned tuple holds the read guard for the
     /// lifetime of the borrow; drop it quickly.
-    pub fn read_snapshot(&self) -> std::sync::RwLockReadGuard<'_, SharedSBasisInner> {
+    pub fn read_snapshot(&self) -> std::sync::RwLockReadGuard<'_, SharedSBasisInner<F>> {
         self.inner.read().unwrap()
     }
 
@@ -144,7 +145,7 @@ impl SharedSBasis {
     /// Clone-out an `Arc<Poly>` for index `idx`. Cheap (one atomic
     /// ref-count bump). Callers use this to hold a stable handle on
     /// a basis element after dropping the read lock.
-    pub fn poly(&self, idx: usize) -> Arc<Poly> {
+    pub fn poly(&self, idx: usize) -> Arc<Poly<F>> {
         Arc::clone(&self.inner.read().unwrap().polys[idx])
     }
 
@@ -156,7 +157,7 @@ impl SharedSBasis {
     ///
     /// Takes an `inner` read-guard implicitly to walk the arrays.
     /// Writes redundancy flags via their atomics (no lock needed).
-    pub fn clear_redundant_for(&self, ring: &Ring, idx: usize) {
+    pub fn clear_redundant_for(&self, ring: &Ring<F>, idx: usize) {
         let inner = self.inner.read().unwrap();
         let polys = &inner.polys;
         let sevs = &inner.sevs;
@@ -187,7 +188,7 @@ impl SharedSBasis {
     }
 }
 
-impl Default for SharedSBasis {
+impl<F: Field + Copy + Send + Sync> Default for SharedSBasis<F> {
     fn default() -> Self {
         Self::new()
     }
@@ -251,11 +252,11 @@ impl Default for SharedLSet {
 /// via `into_basis`, which unwraps the inner `Arc` (cheap because
 /// no worker is holding it any more).
 #[derive(Debug)]
-pub struct Computation {
+pub struct Computation<F: Field + Copy + Send + Sync> {
     /// The ring — immutable, shared by all workers.
-    pub ring: Arc<Ring>,
+    pub ring: Arc<Ring<F>>,
     /// The growing basis.
-    pub basis: SharedSBasis,
+    pub basis: SharedSBasis<F>,
     /// The pair queue.
     pub l_set: SharedLSet,
     /// Cancellation flag. Workers poll at cursor boundaries.
@@ -296,9 +297,9 @@ pub struct Computation {
     pub insert_mutex: Mutex<()>,
 }
 
-impl Computation {
+impl<F: Field + Copy + Send + Sync> Computation<F> {
     /// Fresh computation.
-    pub fn new(ring: Arc<Ring>) -> Self {
+    pub fn new(ring: Arc<Ring<F>>) -> Self {
         Self {
             ring,
             basis: SharedSBasis::new(),
@@ -344,26 +345,27 @@ impl Computation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::Field;
     use crate::monomial::Monomial;
     use crate::ordering::MonoOrder;
+    use ark_bls12_381::Fr;
+    use ark_ff::One;
 
-    fn mk_ring(nvars: u32, p: u32) -> Arc<Ring> {
-        Arc::new(Ring::new(nvars, MonoOrder::DegRevLex, Field::new(p).unwrap()).unwrap())
+    fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
+        Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
     }
 
     #[test]
     fn push_and_snapshot() {
-        let r = mk_ring(3, 13);
+        let r = mk_ring(3);
         let b = SharedSBasis::new();
         let p1 = Arc::new(Poly::monomial(
             &r,
-            1,
+            Fr::one(),
             Monomial::from_exponents(&r, &[2, 0, 0]).unwrap(),
         ));
         let p2 = Arc::new(Poly::monomial(
             &r,
-            1,
+            Fr::one(),
             Monomial::from_exponents(&r, &[0, 1, 0]).unwrap(),
         ));
         let i1 = b.push(p1, 0);
@@ -377,11 +379,11 @@ mod tests {
 
     #[test]
     fn redundant_atomic() {
-        let r = mk_ring(3, 13);
+        let r = mk_ring(3);
         let b = SharedSBasis::new();
         let p = Arc::new(Poly::monomial(
             &r,
-            1,
+            Fr::one(),
             Monomial::from_exponents(&r, &[1, 0, 0]).unwrap(),
         ));
         b.push(p, 0);
@@ -392,7 +394,7 @@ mod tests {
 
     #[test]
     fn cancel_flag_round_trips() {
-        let r = mk_ring(3, 13);
+        let r = mk_ring(3);
         let c = Computation::new(r);
         assert!(!c.is_cancelled());
         c.cancel();
@@ -401,7 +403,7 @@ mod tests {
 
     #[test]
     fn alloc_arrivals_is_monotonic() {
-        let r = mk_ring(3, 13);
+        let r = mk_ring(3);
         let c = Computation::new(r);
         let a = c.alloc_one_arrival();
         let b = c.alloc_arrivals(3);

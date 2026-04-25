@@ -23,6 +23,7 @@
 //! always use the straight "global ordering, no Mora ecart" path.
 
 use crate::bset::BSet;
+use crate::field::Field;
 use crate::lset::LSet;
 use crate::monomial::Monomial;
 use crate::pair::Pair;
@@ -42,9 +43,9 @@ use crate::sbasis::SBasis;
 /// S-polynomial reduces to zero before it can contribute anything
 /// new to the basis.
 #[allow(clippy::too_many_arguments)]
-pub fn enter_one_pair_normal(
-    ring: &Ring,
-    s_basis: &SBasis,
+pub fn enter_one_pair_normal<F: Field + Copy + Send + Sync>(
+    ring: &Ring<F>,
+    s_basis: &SBasis<F>,
     s_idx: u32,
     h_idx: u32,
     h_lm: &Monomial,
@@ -99,7 +100,11 @@ pub fn enter_one_pair_normal(
 
 /// Coprime check on monomials: no variable has nonzero exponent in
 /// both. Called *after* the sev pre-filter rejects obvious shares.
-fn monomials_are_coprime(a: &Monomial, b: &Monomial, ring: &Ring) -> bool {
+fn monomials_are_coprime<F: Field + Copy + Send + Sync>(
+    a: &Monomial,
+    b: &Monomial,
+    ring: &Ring<F>,
+) -> bool {
     let n = ring.nvars();
     for i in 0..n {
         let ea = a.exponent(ring, i).expect("i < nvars");
@@ -128,9 +133,9 @@ fn monomials_are_coprime(a: &Monomial, b: &Monomial, ring: &Ring) -> bool {
 ///    the pair is covered by the chain `(i, h), (j, h)` and gets
 ///    tombstoned. The equality guards preserve the pair whose LCM
 ///    would collapse onto an S–h pair.
-pub fn chain_crit_normal(
-    ring: &Ring,
-    s_basis: &SBasis,
+pub fn chain_crit_normal<F: Field + Copy + Send + Sync>(
+    ring: &Ring<F>,
+    s_basis: &SBasis<F>,
     h_lm: &Monomial,
     h_lm_sev: u64,
     h_idx: u32,
@@ -247,11 +252,11 @@ pub fn chain_crit_normal(
 /// returned count. The returned value is the number of pairs that
 /// actually made it into L (after both phases of the chain crit).
 #[allow(clippy::too_many_arguments)]
-pub fn enterpairs(
-    ring: &Ring,
-    s_basis: &SBasis,
+pub fn enterpairs<F: Field + Copy + Send + Sync>(
+    ring: &Ring<F>,
+    s_basis: &SBasis<F>,
     h_idx: u32,
-    h_poly: &Poly,
+    h_poly: &Poly<F>,
     h_sugar: u32,
     l_set: &mut LSet,
     arrival_start: u64,
@@ -286,21 +291,26 @@ pub fn enterpairs(
 /// `enterS`: append `h` to the basis with redundancy marking. This
 /// is just `SBasis::insert`; re-exported here so the bba driver's
 /// call site reads `enter_s(h)` symmetric with `enterpairs(h)`.
-pub fn enter_s(ring: &Ring, s_basis: &mut SBasis, h: Poly) -> usize {
+pub fn enter_s<F: Field + Copy + Send + Sync>(
+    ring: &Ring<F>,
+    s_basis: &mut SBasis<F>,
+    h: Poly<F>,
+) -> usize {
     s_basis.insert(ring, h)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::Field;
     use crate::ordering::MonoOrder;
+    use ark_bls12_381::Fr;
+    use ark_ff::One;
 
-    fn mk_ring(nvars: u32) -> Ring {
-        Ring::new(nvars, MonoOrder::DegRevLex, Field::new(32003).unwrap()).unwrap()
+    fn mk_ring(nvars: u32) -> Ring<Fr> {
+        Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap()
     }
 
-    fn mono(r: &Ring, e: &[u32]) -> Monomial {
+    fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
         Monomial::from_exponents(r, e).unwrap()
     }
 
@@ -309,8 +319,8 @@ mod tests {
         // x, y: coprime leading monomials.
         let r = mk_ring(3);
         let mut s = SBasis::new();
-        s.insert(&r, Poly::monomial(&r, 1, mono(&r, &[1, 0, 0])));
-        let h = Poly::monomial(&r, 1, mono(&r, &[0, 1, 0]));
+        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[1, 0, 0])));
+        let h = Poly::monomial(&r, Fr::one(), mono(&r, &[0, 1, 0]));
         let h_lm = h.leading().unwrap().1.clone();
         let got = enter_one_pair_normal(&r, &s, 0, 1, &h_lm, h.lm_sev(), 1, 0);
         assert!(got.is_none(), "coprime LMs must be pruned by product crit");
@@ -320,8 +330,8 @@ mod tests {
     fn share_variable_keeps_pair() {
         let r = mk_ring(3);
         let mut s = SBasis::new();
-        s.insert(&r, Poly::monomial(&r, 1, mono(&r, &[1, 1, 0])));
-        let h = Poly::monomial(&r, 1, mono(&r, &[0, 1, 1]));
+        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[1, 1, 0])));
+        let h = Poly::monomial(&r, Fr::one(), mono(&r, &[0, 1, 1]));
         let h_lm = h.leading().unwrap().1.clone();
         let got = enter_one_pair_normal(&r, &s, 0, 1, &h_lm, h.lm_sev(), 2, 0).unwrap();
         assert_eq!(got.i, 0);
@@ -336,8 +346,8 @@ mod tests {
         // pruned by product crit. L is empty after enterpairs.
         let r = mk_ring(2);
         let mut s = SBasis::new();
-        s.insert(&r, Poly::monomial(&r, 1, mono(&r, &[2, 0])));
-        let h = Poly::monomial(&r, 1, mono(&r, &[0, 2]));
+        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[2, 0])));
+        let h = Poly::monomial(&r, Fr::one(), mono(&r, &[0, 2]));
         let h_idx = s.insert(&r, h.clone());
         let mut l = LSet::new();
         let inserted = enterpairs(&r, &s, h_idx as u32, &h, h.lm_deg(), &mut l, 0);
@@ -350,8 +360,8 @@ mod tests {
         // S = {xy}, add yz. LMs share y; product crit does NOT prune.
         let r = mk_ring(3);
         let mut s = SBasis::new();
-        s.insert(&r, Poly::monomial(&r, 1, mono(&r, &[1, 1, 0])));
-        let h = Poly::monomial(&r, 1, mono(&r, &[0, 1, 1]));
+        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[1, 1, 0])));
+        let h = Poly::monomial(&r, Fr::one(), mono(&r, &[0, 1, 1]));
         let h_idx = s.insert(&r, h.clone());
         let mut l = LSet::new();
         let inserted = enterpairs(&r, &s, h_idx as u32, &h, h.lm_deg(), &mut l, 0);
@@ -399,9 +409,9 @@ mod tests {
         // Three unrelated LMs (no redundancy triggered): z, y, x.
         // Their divisibility is irrelevant; we'll install crafted
         // pairs directly into B below.
-        s.insert(&r, Poly::monomial(&r, 1, mono(&r, &[0, 0, 1])));
-        s.insert(&r, Poly::monomial(&r, 1, mono(&r, &[0, 1, 0])));
-        s.insert(&r, Poly::monomial(&r, 1, mono(&r, &[1, 0, 0])));
+        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[0, 0, 1])));
+        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[0, 1, 0])));
+        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[1, 0, 0])));
         let h_lm = mono(&r, &[0, 1, 1]); // y z
         let h_lm_sev = h_lm.sev();
 
@@ -471,22 +481,22 @@ mod tests {
         let f_0 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 0, 0])),
-                (1, mono(&r, &[0, 1, 0])),
-                (1, mono(&r, &[0, 0, 1])),
+                (Fr::one(), mono(&r, &[1, 0, 0])),
+                (Fr::one(), mono(&r, &[0, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 0, 1])),
             ],
         );
         let f_1 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 1, 0])),
-                (1, mono(&r, &[0, 1, 1])),
-                (1, mono(&r, &[1, 0, 1])),
+                (Fr::one(), mono(&r, &[1, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 1, 1])),
+                (Fr::one(), mono(&r, &[1, 0, 1])),
             ],
         );
         let f_2 = Poly::from_terms(
             &r,
-            vec![(1, mono(&r, &[1, 1, 1])), (32002, mono(&r, &[0, 0, 0]))],
+            vec![(Fr::one(), mono(&r, &[1, 1, 1])), (-Fr::one(), mono(&r, &[0, 0, 0]))],
         );
 
         let h0_idx = enter_s(&r, &mut s, f_0.clone()) as u32;
@@ -527,15 +537,15 @@ mod tests {
         // → (0, 1) dies by the L-side chain criterion.
         let r = mk_ring(2);
         let mut s = SBasis::new();
-        s.insert(&r, Poly::monomial(&r, 1, mono(&r, &[2, 1])));
-        s.insert(&r, Poly::monomial(&r, 1, mono(&r, &[1, 2])));
+        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[2, 1])));
+        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[1, 2])));
 
         let mut l = LSet::new();
         let lcm_01 = mono(&r, &[2, 2]);
         l.insert(Pair::new(0, 1, lcm_01, 4, 0));
         assert!(l.contains(0, 1));
 
-        let h = Poly::monomial(&r, 1, mono(&r, &[1, 1]));
+        let h = Poly::monomial(&r, Fr::one(), mono(&r, &[1, 1]));
         let h_idx = s.insert(&r, h.clone());
         let _ = enterpairs(&r, &s, h_idx as u32, &h, h.lm_deg(), &mut l, 10);
 

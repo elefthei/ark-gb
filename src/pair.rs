@@ -93,7 +93,10 @@ impl Pair {
     }
 
     /// Debug-only invariant check.
-    pub fn assert_canonical(&self, ring: &crate::ring::Ring) {
+    pub fn assert_canonical<F: ark_ff::Field + Copy + Send + Sync>(
+        &self,
+        ring: &crate::ring::Ring<F>,
+    ) {
         assert!(self.i < self.j, "pair indices not ordered");
         self.lcm.assert_canonical(ring);
         assert_eq!(self.lcm_sev, self.lcm.sev(), "lcm_sev cache mismatch");
@@ -126,18 +129,18 @@ impl Eq for Pair {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::Field;
     use crate::monomial::Monomial;
     use crate::ordering::MonoOrder;
     use crate::ring::Ring;
+    use ark_bls12_381::Fr;
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
 
-    fn mk_ring(nvars: u32) -> Ring {
-        Ring::new(nvars, MonoOrder::DegRevLex, Field::new(32003).unwrap()).unwrap()
+    fn mk_ring(nvars: u32) -> Ring<Fr> {
+        Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap()
     }
 
-    fn lcm_mono(r: &Ring, exps: &[u32]) -> Monomial {
+    fn lcm_mono(r: &Ring<Fr>, exps: &[u32]) -> Monomial {
         Monomial::from_exponents(r, exps).unwrap()
     }
 

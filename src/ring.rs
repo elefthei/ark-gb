@@ -1,11 +1,10 @@
 //! Polynomial ring definition.
 //!
 //! A [`Ring`] bundles the immutable data every polynomial operation needs:
-//! number of variables, monomial ordering, coefficient field, and the
-//! precomputed bitmasks used by [`crate::monomial::Monomial`]'s mul and
-//! cmp routines. Rings are shared between threads via `Arc<Ring>` (see
-//! `~/project/docs/rust-bba-port-plan.md` §6.1); the type is `Send + Sync`
-//! because it holds only immutable data.
+//! number of variables, monomial ordering, and the precomputed bitmasks 
+//! used by [`crate::monomial::Monomial`]'s mul and cmp routines. Rings are 
+//! shared between threads via `Arc<Ring>` (see `~/project/docs/rust-bba-port-plan.md` 
+//! §6.1); the type is `Send + Sync` because it holds only immutable data.
 //!
 //! This bootstrap fixes two representation parameters:
 //!
@@ -23,6 +22,7 @@
 //! mirroring Singular's `kStratChangeTailRing`) are listed as deferred
 //! enhancements in ADR-005.
 
+use std::marker::PhantomData;
 use crate::field::Field;
 use crate::ordering::MonoOrder;
 
@@ -51,13 +51,13 @@ pub const MAX_VARS: u32 = 31;
 /// Construct via [`Ring::new`]. Share via `Arc<Ring>`. Never mutated
 /// after construction; every method takes `&self`.
 #[derive(Debug, Clone)]
-pub struct Ring {
+pub struct Ring<F: Field + Copy + Send + Sync> {
     /// Number of variables. `1 ≤ nvars ≤ MAX_VARS`.
     nvars: u32,
     /// Monomial ordering. Currently always [`MonoOrder::DegRevLex`].
     ordering: MonoOrder,
-    /// Coefficient field Z/pZ.
-    field: Field,
+    /// Phantom data for the coefficient field type.
+    _marker: PhantomData<F>,
     /// Per-word overflow guard mask: bit 7 set in each variable byte
     /// slot, 0 elsewhere (top "total-degree" byte and any unused
     /// low bytes). Used by `Monomial::assert_canonical` and by
@@ -77,7 +77,7 @@ pub struct Ring {
     cmp_flip_mask: [u64; 4],
 }
 
-impl Ring {
+impl<F: Field + Copy + Send + Sync> Ring<F> {
     /// Construct a new ring.
     ///
     /// Returns `None` if `nvars` is out of range (`0` or `> MAX_VARS`)
@@ -98,7 +98,7 @@ impl Ring {
     /// overflow, the dispatch filter (in Singular-ark_gb's
     /// `ark_gb-dispatch.lib`) must tighten to exclude them before
     /// the ring reaches this constructor.
-    pub fn new(nvars: u32, ordering: MonoOrder, field: Field) -> Option<Self> {
+    pub fn new(nvars: u32, ordering: MonoOrder) -> Option<Self> {
         if nvars == 0 || nvars > MAX_VARS {
             return None;
         }
@@ -111,7 +111,7 @@ impl Ring {
         Some(Self {
             nvars,
             ordering,
-            field,
+            _marker: PhantomData,
             overflow_mask,
             cmp_flip_mask,
         })
@@ -129,12 +129,6 @@ impl Ring {
         self.ordering
     }
 
-    /// Coefficient field.
-    #[inline]
-    pub fn field(&self) -> &Field {
-        &self.field
-    }
-
     /// Per-word overflow guard mask. See struct docstring.
     #[inline]
     pub fn overflow_mask(&self) -> &[u64; 4] {
@@ -148,14 +142,14 @@ impl Ring {
     }
 }
 
-impl PartialEq for Ring {
+impl<F: Field + Copy + Send + Sync> PartialEq for Ring<F> {
     fn eq(&self, other: &Self) -> bool {
         // The masks are a pure function of nvars + ordering, so we don't
         // need to compare them explicitly.
-        self.nvars == other.nvars && self.ordering == other.ordering && self.field == other.field
+        self.nvars == other.nvars && self.ordering == other.ordering
     }
 }
-impl Eq for Ring {}
+impl<F: Field + Copy + Send + Sync> Eq for Ring<F> {}
 
 /// Compute the packing masks for a ring with the given number of
 /// variables. The variable bytes occupy positions `[31 - nvars, 30]`
@@ -179,20 +173,19 @@ fn compute_packing_masks(nvars: u32) -> ([u64; 4], [u64; 4]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ark_bls12_381::Fr;
 
     #[test]
     fn constructs_valid_ring() {
-        let f = Field::new(32003).unwrap();
-        let r = Ring::new(5, MonoOrder::DegRevLex, f).unwrap();
+        let r = Ring::<Fr>::new(5, MonoOrder::DegRevLex).unwrap();
         assert_eq!(r.nvars(), 5);
     }
 
     #[test]
     fn rejects_out_of_range_nvars() {
-        let f = Field::new(5).unwrap();
-        assert!(Ring::new(0, MonoOrder::DegRevLex, f).is_none());
-        assert!(Ring::new(MAX_VARS + 1, MonoOrder::DegRevLex, f).is_none());
-        assert!(Ring::new(MAX_VARS, MonoOrder::DegRevLex, f).is_some());
+        assert!(Ring::<Fr>::new(0, MonoOrder::DegRevLex).is_none());
+        assert!(Ring::<Fr>::new(MAX_VARS + 1, MonoOrder::DegRevLex).is_none());
+        assert!(Ring::<Fr>::new(MAX_VARS, MonoOrder::DegRevLex).is_some());
     }
 
     #[test]
@@ -200,8 +193,7 @@ mod tests {
         // For nvars = 3: variable bytes are 28, 29, 30 (in word 3,
         // shifts 32, 40, 48). Top byte 31 (shift 56, total-degree)
         // and all of words 0..3 should be zero.
-        let f = Field::new(2).unwrap();
-        let r = Ring::new(3, MonoOrder::DegRevLex, f).unwrap();
+        let r = Ring::<Fr>::new(3, MonoOrder::DegRevLex).unwrap();
         let ovf = r.overflow_mask();
         let flip = r.cmp_flip_mask();
         assert_eq!(ovf, &[0, 0, 0, 0x0080808000000000]);
@@ -209,7 +201,7 @@ mod tests {
 
         // For nvars = 25: variable bytes 6..=30. Crosses word
         // boundaries at byte 8, 16, 24. Top byte (shift 56) excluded.
-        let r = Ring::new(25, MonoOrder::DegRevLex, Field::new(2).unwrap()).unwrap();
+        let r = Ring::<Fr>::new(25, MonoOrder::DegRevLex).unwrap();
         let ovf = r.overflow_mask();
         // Word 0: bytes 6, 7 → shifts 48, 56.
         assert_eq!(ovf[0], 0x8080_0000_0000_0000);
@@ -224,7 +216,7 @@ mod tests {
     #[test]
     fn packing_masks_have_no_overlap_with_unused_bytes() {
         // For nvars = 1: only byte 30. Verify no other byte set.
-        let r = Ring::new(1, MonoOrder::DegRevLex, Field::new(2).unwrap()).unwrap();
+        let r = Ring::<Fr>::new(1, MonoOrder::DegRevLex).unwrap();
         let ovf = r.overflow_mask();
         assert_eq!(ovf, &[0, 0, 0, 0x0080_0000_0000_0000]);
     }

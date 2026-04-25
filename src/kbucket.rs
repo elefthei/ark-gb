@@ -65,7 +65,7 @@
 
 use std::sync::Arc;
 
-use crate::field::Coeff;
+use crate::field::Field;
 use crate::monomial::Monomial;
 use crate::poly::Poly;
 use crate::ring::Ring;
@@ -127,16 +127,16 @@ fn slot_capacity(i: usize) -> usize {
 /// is legal (the bba driver will do so when stealing work), but
 /// shared access is not.
 #[derive(Debug)]
-pub struct KBucket {
+pub struct KBucket<F: Field + Copy> {
     /// Ring context. Shared via `Arc` so the bucket can outlive the
     /// scope in which it was created without copying ring state.
-    ring: Arc<Ring>,
+    ring: Arc<Ring<F>>,
     /// Exponentially-sized slots; `slots[i]` holds polys of length
     /// `≤ 4^i`. `None` means the slot is empty.
-    slots: [Option<Poly>; NUM_SLOTS],
+    slots: [Option<Poly<F>>; NUM_SLOTS],
     /// Cached leading term: `(coeff, monomial, slot_index)`. The
     /// `slot_index` is which slot currently owns the leading term.
-    lm_cache: Option<(Coeff, Monomial, usize)>,
+    lm_cache: Option<(F, Monomial, usize)>,
     /// Bitmask of slots changed since the last `leading()` call.
     /// Bit `i` (i < `NUM_SLOTS`) corresponds to slot `i`.
     dirty: u32,
@@ -145,11 +145,11 @@ pub struct KBucket {
     _not_sync: std::marker::PhantomData<std::cell::Cell<()>>,
 }
 
-impl KBucket {
+impl<F: Field + Copy> KBucket<F> {
     // ----- Constructors -----
 
     /// Empty bucket.
-    pub fn new(ring: Arc<Ring>) -> Self {
+    pub fn new(ring: Arc<Ring<F>>) -> Self {
         Self {
             ring,
             slots: std::array::from_fn(|_| None),
@@ -161,7 +161,7 @@ impl KBucket {
 
     /// Seed the bucket from a polynomial. The polynomial is consumed
     /// and placed in whichever slot its length selects.
-    pub fn from_poly(ring: Arc<Ring>, p: Poly) -> Self {
+    pub fn from_poly(ring: Arc<Ring<F>>, p: Poly<F>) -> Self {
         let mut b = Self::new(ring);
         if !p.is_zero() {
             let i = slot_for_len(p.len());
@@ -176,7 +176,7 @@ impl KBucket {
 
     /// The ring this bucket lives in.
     #[inline]
-    pub fn ring(&self) -> &Arc<Ring> {
+    pub fn ring(&self) -> &Arc<Ring<F>> {
         &self.ring
     }
 
@@ -203,7 +203,7 @@ impl KBucket {
     ///
     /// Precondition: `q` is already canonical (matches `Poly`
     /// invariants) and nonzero.
-    fn absorb(&mut self, mut q: Poly) {
+    fn absorb(&mut self, mut q: Poly<F>) {
         debug_assert!(!q.is_zero());
         let mut i = slot_for_len(q.len());
         debug_assert!(i < NUM_SLOTS, "slot overflow: len = {}", q.len());
@@ -263,9 +263,8 @@ impl KBucket {
     /// via `debug_assert!` inside `Monomial::mul`; release builds
     /// silently corrupt the monomial (matching Singular's
     /// `p_ExpVectorAdd` release-mode contract).
-    pub fn minus_m_mult_p(&mut self, m: &Monomial, c: Coeff, p: &Poly) {
-        debug_assert!(c < self.ring.field().p());
-        if c == 0 || p.is_zero() {
+    pub fn minus_m_mult_p(&mut self, m: &Monomial, c: F, p: &Poly<F>) {
+        if c.is_zero() || p.is_zero() {
             return;
         }
 
@@ -330,7 +329,7 @@ impl KBucket {
     /// mutation is only redistributing the representation across slots
     /// (peeling cancelled leaders, refreshing `dirty` / `lm_cache`).
     /// To actually pop the leader, use [`extract_leading`](Self::extract_leading).
-    pub fn leading(&mut self) -> Option<(Coeff, &Monomial)> {
+    pub fn leading(&mut self) -> Option<(F, &Monomial)> {
         if self.dirty == 0
             && let Some((c, ref m, _)) = self.lm_cache
         {
@@ -350,7 +349,7 @@ impl KBucket {
         // strictly-larger leader we reset total_c and matching.
         loop {
             let mut best: Option<usize> = None;
-            let mut total_c: Coeff = 0;
+            let mut total_c: F = F::zero();
             let mut matching_mask: u32 = 0;
             for (i, slot) in self.slots.iter().enumerate() {
                 let Some(p) = slot else { continue };
@@ -373,7 +372,7 @@ impl KBucket {
                                 matching_mask = 1u32 << i;
                             }
                             std::cmp::Ordering::Equal => {
-                                total_c = self.ring.field().add(total_c, c_i);
+                                total_c += c_i;
                                 matching_mask |= 1u32 << i;
                             }
                             std::cmp::Ordering::Less => {}
@@ -387,7 +386,7 @@ impl KBucket {
                 return None;
             };
 
-            if total_c != 0 {
+            if !total_c.is_zero() {
                 self.dirty = 0;
                 // Clone the leader monomial only now (once), for the
                 // cache. The single clone avoids the earlier
@@ -421,7 +420,7 @@ impl KBucket {
     ///
     /// Returns `None` if the bucket is zero. Leaves the bucket
     /// algebraically equal to (old value) − (popped term).
-    pub fn extract_leading(&mut self) -> Option<(Coeff, Monomial)> {
+    pub fn extract_leading(&mut self) -> Option<(F, Monomial)> {
         let (c, m) = match self.leading() {
             None => return None,
             Some((c, m)) => (c, m.clone()),
@@ -463,7 +462,7 @@ impl KBucket {
 
     /// Consume the bucket and return the canonical sum as a single
     /// [`Poly`].
-    pub fn into_poly(self) -> Poly {
+    pub fn into_poly(self) -> Poly<F> {
         let KBucket { ring, slots, .. } = self;
         let mut acc = Poly::zero();
         for s in slots.into_iter().flatten() {
@@ -502,7 +501,7 @@ impl KBucket {
             );
         }
         if let Some((c, m, slot)) = &self.lm_cache {
-            assert_ne!(*c, 0, "cached leading coeff must be nonzero");
+            assert!(!c.is_zero(), "cached leading coeff must be nonzero");
             // The cached slot's leader should share the cached m
             // (the slot's leader monomial == m). We don't verify the
             // coefficient because lm_cache stores the *sum* across
@@ -524,21 +523,22 @@ impl KBucket {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::Field;
+    use ark_bls12_381::Fr;
+    use ark_ff::One;
     use crate::ordering::MonoOrder;
 
-    fn mk_ring(nvars: u32, p: u32) -> Arc<Ring> {
-        Arc::new(Ring::new(nvars, MonoOrder::DegRevLex, Field::new(p).unwrap()).unwrap())
+    fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
+        Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
     }
 
-    fn mono(r: &Ring, e: &[u32]) -> Monomial {
+    fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
         Monomial::from_exponents(r, e).unwrap()
     }
 
     #[test]
     fn new_is_zero() {
-        let r = mk_ring(3, 13);
-        let mut b = KBucket::new(Arc::clone(&r));
+        let r = mk_ring(3);
+        let mut b = KBucket::<Fr>::new(Arc::clone(&r));
         b.assert_canonical();
         assert!(b.all_slots_empty());
         assert!(b.is_zero());
@@ -549,13 +549,13 @@ mod tests {
 
     #[test]
     fn from_poly_preserves_value() {
-        let r = mk_ring(3, 13);
+        let r = mk_ring(3);
         let p = Poly::from_terms(
             &r,
             vec![
-                (3, mono(&r, &[2, 1, 0])),
-                (7, mono(&r, &[1, 0, 1])),
-                (1, mono(&r, &[0, 0, 2])),
+                (Fr::from(3u64), mono(&r, &[2, 1, 0])),
+                (Fr::from(7u64), mono(&r, &[1, 0, 1])),
+                (Fr::from(1u64), mono(&r, &[0, 0, 2])),
             ],
         );
         let mut b = KBucket::from_poly(Arc::clone(&r), p.clone());
@@ -569,15 +569,15 @@ mod tests {
 
     #[test]
     fn minus_m_mult_p_into_empty_matches_slow_path() {
-        let r = mk_ring(3, 13);
+        let r = mk_ring(3);
         let q = Poly::from_terms(
             &r,
-            vec![(4, mono(&r, &[1, 1, 0])), (5, mono(&r, &[0, 0, 1]))],
+            vec![(Fr::from(4u64), mono(&r, &[1, 1, 0])), (Fr::from(5u64), mono(&r, &[0, 0, 1]))],
         );
         let m = mono(&r, &[1, 0, 0]);
-        let c: Coeff = 2;
+        let c: Fr = Fr::from(2u64);
 
-        let mut b = KBucket::new(Arc::clone(&r));
+        let mut b = KBucket::<Fr>::new(Arc::clone(&r));
         b.minus_m_mult_p(&m, c, &q);
         b.assert_canonical();
 
@@ -590,16 +590,16 @@ mod tests {
 
     #[test]
     fn add_then_subtract_cancels() {
-        let r = mk_ring(3, 13);
+        let r = mk_ring(3);
         let q = Poly::from_terms(
             &r,
-            vec![(4, mono(&r, &[1, 1, 0])), (5, mono(&r, &[0, 0, 1]))],
+            vec![(Fr::from(4u64), mono(&r, &[1, 1, 0])), (Fr::from(5u64), mono(&r, &[0, 0, 1]))],
         );
         let m = mono(&r, &[1, 0, 0]);
-        let c: Coeff = 2;
-        let neg_c = r.field().neg(c);
+        let c: Fr = Fr::from(2u64);
+        let neg_c = -c;
 
-        let mut b = KBucket::new(Arc::clone(&r));
+        let mut b = KBucket::<Fr>::new(Arc::clone(&r));
         // b += c*m*q  i.e. -(-c)*m*q
         b.minus_m_mult_p(&m, neg_c, &q);
         // b -= c*m*q
@@ -612,8 +612,8 @@ mod tests {
 
     #[test]
     fn leading_cache_is_used_when_not_dirty() {
-        let r = mk_ring(2, 7);
-        let p = Poly::from_terms(&r, vec![(3, mono(&r, &[2, 0])), (4, mono(&r, &[1, 1]))]);
+        let r = mk_ring(2);
+        let p = Poly::from_terms(&r, vec![(Fr::from(3u64), mono(&r, &[2, 0])), (Fr::from(4u64), mono(&r, &[1, 1]))]);
         let mut b = KBucket::from_poly(Arc::clone(&r), p);
         // First call computes.
         let (c1, m1) = {
@@ -633,40 +633,40 @@ mod tests {
 
     #[test]
     fn minus_m_mult_p_dirties_slot() {
-        let r = mk_ring(2, 7);
-        let q = Poly::from_terms(&r, vec![(1, mono(&r, &[1, 0]))]);
+        let r = mk_ring(2);
+        let q = Poly::from_terms(&r, vec![(Fr::from(1u64), mono(&r, &[1, 0]))]);
         let m = mono(&r, &[0, 1]);
 
-        let mut b = KBucket::new(Arc::clone(&r));
-        b.minus_m_mult_p(&m, 1, &q);
+        let mut b = KBucket::<Fr>::new(Arc::clone(&r));
+        b.minus_m_mult_p(&m, Fr::one(), &q);
         assert_ne!(b.dirty, 0);
         // Force cache; dirty clears.
         b.leading();
         assert_eq!(b.dirty, 0);
         // Another op dirties again.
-        b.minus_m_mult_p(&m, 1, &q);
+        b.minus_m_mult_p(&m, Fr::one(), &q);
         assert_ne!(b.dirty, 0);
     }
 
     #[test]
     fn extract_leading_shrinks_bucket() {
-        let r = mk_ring(3, 13);
+        let r = mk_ring(3);
         let p = Poly::from_terms(
             &r,
             vec![
-                (3, mono(&r, &[2, 0, 0])),
-                (5, mono(&r, &[1, 0, 0])),
-                (1, mono(&r, &[0, 0, 1])),
+                (Fr::from(3u64), mono(&r, &[2, 0, 0])),
+                (Fr::from(5u64), mono(&r, &[1, 0, 0])),
+                (Fr::from(1u64), mono(&r, &[0, 0, 1])),
             ],
         );
         let mut b = KBucket::from_poly(Arc::clone(&r), p.clone());
         let (c, m) = b.extract_leading().unwrap();
-        assert_eq!(c, 3);
+        assert_eq!(c, Fr::from(3u64));
         assert_eq!(m, mono(&r, &[2, 0, 0]));
         let remainder = b.into_poly();
         let expected = Poly::from_terms(
             &r,
-            vec![(5, mono(&r, &[1, 0, 0])), (1, mono(&r, &[0, 0, 1]))],
+            vec![(Fr::from(5u64), mono(&r, &[1, 0, 0])), (Fr::from(1u64), mono(&r, &[0, 0, 1]))],
         );
         assert_eq!(remainder, expected);
     }
@@ -674,22 +674,22 @@ mod tests {
     #[test]
     fn cascade_up_through_multiple_slots() {
         // Seed with many tiny single-term ops so the cascade fires.
-        let r = mk_ring(3, 101);
-        let mut b = KBucket::new(Arc::clone(&r));
+        let r = mk_ring(3);
+        let mut b = KBucket::<Fr>::new(Arc::clone(&r));
         // Add 20 distinct one-term polys of length 1 each via
         // minus_m_mult_p. Each goes into slot 0; cascading should
         // push the total up into slot 2 (log4(20) ≈ 2.2 -> slot 3).
         let m_one = Monomial::one(&r);
         for i in 1u32..=20 {
-            let q = Poly::from_terms(&r, vec![(1, mono(&r, &[i % 5, (i / 5) % 5, 0]))]);
+            let q = Poly::from_terms(&r, vec![(Fr::from(1u64), mono(&r, &[i % 5, (i / 5) % 5, 0]))]);
             // We want to accumulate +q, i.e. -(-1)*1*q.
-            b.minus_m_mult_p(&m_one, r.field().neg(1), &q);
+            b.minus_m_mult_p(&m_one, -Fr::one(), &q);
         }
         b.assert_canonical();
         // The bucket's total must equal the naive sum.
         let mut expected = Poly::zero();
         for i in 1u32..=20 {
-            let q = Poly::from_terms(&r, vec![(1, mono(&r, &[i % 5, (i / 5) % 5, 0]))]);
+            let q = Poly::from_terms(&r, vec![(Fr::from(1u64), mono(&r, &[i % 5, (i / 5) % 5, 0]))]);
             expected = expected.add(&q, &r);
         }
         let got = b.into_poly();
@@ -700,11 +700,11 @@ mod tests {
 
     #[test]
     fn is_zero_agrees_with_into_poly() {
-        let r = mk_ring(2, 5);
-        let mut b = KBucket::new(Arc::clone(&r));
-        let p = Poly::from_terms(&r, vec![(2, mono(&r, &[1, 0]))]);
-        b.minus_m_mult_p(&Monomial::one(&r), 3, &p); // -3*1*p = -3p
-        b.minus_m_mult_p(&Monomial::one(&r), r.field().neg(3), &p); // +3p
+        let r = mk_ring(2);
+        let mut b = KBucket::<Fr>::new(Arc::clone(&r));
+        let p = Poly::from_terms(&r, vec![(Fr::from(2u64), mono(&r, &[1, 0]))]);
+        b.minus_m_mult_p(&Monomial::one(&r), Fr::from(3u64), &p); // -3*1*p = -3p
+        b.minus_m_mult_p(&Monomial::one(&r), -Fr::from(3u64), &p); // +3p
         let zero = b.is_zero();
         let poly = b.into_poly();
         assert_eq!(zero, poly.is_zero());
@@ -717,14 +717,14 @@ mod tests {
         // and cancel: slot A has leader c*m, slot B has leader
         // (-c)*m. leading() must peel both off and expose the next
         // monomial.
-        let r = mk_ring(2, 11);
-        let mut b = KBucket::new(Arc::clone(&r));
-        let p1 = Poly::from_terms(&r, vec![(3, mono(&r, &[2, 0])), (1, mono(&r, &[0, 1]))]);
+        let r = mk_ring(2);
+        let mut b = KBucket::<Fr>::new(Arc::clone(&r));
+        let p1 = Poly::from_terms(&r, vec![(Fr::from(3u64), mono(&r, &[2, 0])), (Fr::from(1u64), mono(&r, &[0, 1]))]);
         let p2 = Poly::from_terms(
             &r,
             vec![
-                (r.field().neg(3), mono(&r, &[2, 0])),
-                (2, mono(&r, &[1, 0])),
+                (-Fr::from(3u64), mono(&r, &[2, 0])),
+                (Fr::from(2u64), mono(&r, &[1, 0])),
             ],
         );
         // Place p1 in slot 1 (len 2 → slot 1), then p2 also wants
@@ -733,7 +733,7 @@ mod tests {
         // `-3*x^2`. We test by adding both as "minus_m_mult_p" with
         // m = 1 and c = -1 (so -(-1)*1*pk = +pk).
         let one = Monomial::one(&r);
-        let neg1 = r.field().neg(1);
+        let neg1 = -Fr::one();
         b.minus_m_mult_p(&one, neg1, &p1);
         b.minus_m_mult_p(&one, neg1, &p2);
         b.assert_canonical();

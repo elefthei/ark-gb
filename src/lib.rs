@@ -15,7 +15,7 @@
 //! * **Ordering:** `DegRevLex` only.
 //! * **Exponent width:** 8 bits per variable, up to
 //!   [`MAX_VARS`](ring::MAX_VARS) variables.
-//! * **Polynomial:** parallel `Vec<Coeff>` / `Vec<Monomial>` with
+//! * **Polynomial:** parallel `Vec<F>` / `Vec<Monomial>` with
 //!   cached leading-term metadata.
 //!
 //! Public types are `Send + Sync` and intended to be shared through
@@ -43,37 +43,40 @@ pub mod sbasis;
 mod simd;
 
 pub use bba::compute_gb;
-pub use computation::{Computation, SharedLSet, SharedSBasis};
-pub use parallel::{CancelHandle, Cancelled, compute_gb_parallel};
 pub use bset::BSet;
-pub use field::{Coeff, Field};
+pub use computation::{Computation, SharedLSet, SharedSBasis};
+pub use field::Field;
 pub use kbucket::KBucket;
 pub use lobject::LObject;
 pub use lset::LSet;
 pub use monomial::Monomial;
 pub use ordering::MonoOrder;
 pub use pair::{Pair, PairKey};
+pub use parallel::{CancelHandle, Cancelled, compute_gb_parallel};
 pub use poly::Poly;
 pub use ring::Ring;
 pub use sbasis::SBasis;
 
 // Compile-time Send + Sync check on the key public types.
+#[cfg(test)]
 const _: fn() = || {
+    use ark_bls12_381::Fr;
     fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<Ring>();
-    assert_send_sync::<Field>();
+    assert_send_sync::<Ring<Fr>>();
     assert_send_sync::<Monomial>();
-    assert_send_sync::<Poly>();
+    assert_send_sync::<Poly<Fr>>();
     assert_send_sync::<Pair>();
-    assert_send_sync::<SBasis>();
+    assert_send_sync::<SBasis<Fr>>();
     assert_send_sync::<LSet>();
     assert_send_sync::<BSet>();
 };
 
 // KBucket and LObject are Send but deliberately not Sync
 // (per-thread ownership).
+#[cfg(test)]
 const _: fn() = || {
+    use ark_bls12_381::Fr;
     fn assert_send<T: Send>() {}
-    assert_send::<KBucket>();
-    assert_send::<LObject>();
+    assert_send::<KBucket<Fr>>();
+    assert_send::<LObject<Fr>>();
 };

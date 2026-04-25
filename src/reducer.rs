@@ -32,7 +32,7 @@
 //! feature flag, staging-validation, and (if successful)
 //! retirement of the geobucket reducer.
 
-use crate::field::Coeff;
+use crate::field::Field;
 use crate::monomial::Monomial;
 use crate::poly::{Poly, PolyCursor};
 use crate::ring::Ring;
@@ -57,10 +57,10 @@ use std::sync::Arc;
 /// lifetime `'a` ties the heap to the borrow of that basis for
 /// the duration of one reduction.
 #[derive(Debug)]
-pub struct Reducer<'a> {
+pub struct Reducer<'a, F: Field + Copy> {
     /// Source polynomial `g_i`. Borrowed from the basis for
     /// the reduction's lifetime.
-    pub poly: &'a Poly,
+    pub poly: &'a Poly<F>,
     /// Multiplier monomial `m_i = lm(LObject) / lm(g_i)` at the
     /// time this reducer was added.
     pub multiplier: Monomial,
@@ -68,7 +68,7 @@ pub struct Reducer<'a> {
     /// `c_i = -leader_coeff(LObject) / lc(g_i)`. With monic
     /// basis elements `lc(g_i) == 1`, this simplifies to
     /// `-leader_coeff`.
-    pub coeff: Coeff,
+    pub coeff: F,
     /// Cursor into `poly` positioned at the next term not yet
     /// queued in the heap. Built from `poly.cursor()` (optionally
     /// pre-advanced, e.g. when a freshly added divisor skips its
@@ -80,7 +80,7 @@ pub struct Reducer<'a> {
     /// Using a cursor instead of a random-access index makes the
     /// reducer oblivious to `Poly`'s backing storage (parallel
     /// vectors vs. linked list).
-    pub cursor: PolyCursor<'a>,
+    pub cursor: PolyCursor<'a, F>,
     /// Sugar contribution: `g_i.lm_deg() + multiplier.total_deg()`.
     /// Used to compute the LObject's running sugar as the
     /// max over all in-flight reducers (plus the initial sugar).
@@ -155,15 +155,15 @@ impl Ord for HeapNode {
 /// Lifetime `'a` ties this state to the borrow of the
 /// [`SBasis`] whose polynomials the [`Reducer`]s reference.
 #[derive(Debug)]
-pub struct ReducerHeap<'a> {
+pub struct ReducerHeap<'a, F: Field + Copy + Send + Sync> {
     /// Owning ring reference. All monomials in the heap belong
     /// to this ring.
-    ring: Arc<Ring>,
+    ring: Arc<Ring<F>>,
     /// Slab of in-flight reducers. Indexed by [`HeapNode::reducer_idx`].
     /// Grows monotonically — a reducer is never removed from the
     /// slab once added (its tail may be exhausted, in which case
     /// no `HeapNode` references it any more, but its slot stays).
-    reducers: Vec<Reducer<'a>>,
+    reducers: Vec<Reducer<'a, F>>,
     /// Max-heap of pending product terms, ordered by degrevlex
     /// via [`HeapNode::cmp_key`]. The std-library `BinaryHeap` is
     /// a max-heap and our [`HeapNode::cmp`] implements degrevlex
@@ -175,12 +175,12 @@ pub struct ReducerHeap<'a> {
     sugar: u32,
 }
 
-impl<'a> ReducerHeap<'a> {
+impl<'a, F: Field + Copy + Send + Sync> ReducerHeap<'a, F> {
     /// Construct an empty reducer state for a reduction starting
     /// at `initial_sugar`. Adding the LObject's polynomial as the
     /// first reducer (with `multiplier = 1`, `coeff = 1`) is the
     /// caller's responsibility (deferred to phase 4).
-    pub fn new(ring: Arc<Ring>, initial_sugar: u32) -> Self {
+    pub fn new(ring: Arc<Ring<F>>, initial_sugar: u32) -> Self {
         Self {
             ring,
             reducers: Vec::new(),
@@ -191,7 +191,7 @@ impl<'a> ReducerHeap<'a> {
 
     /// Borrow the ring this heap operates over.
     #[inline]
-    pub fn ring(&self) -> &Arc<Ring> {
+    pub fn ring(&self) -> &Arc<Ring<F>> {
         &self.ring
     }
 
@@ -281,7 +281,7 @@ impl<'a> ReducerHeap<'a> {
     /// reducer" invariant: an exhausted reducer has zero in flight.
     ///
     /// Updates the running sugar to `max(self.sugar, reducer.sugar)`.
-    pub fn push_reducer(&mut self, reducer: Reducer<'a>) -> usize {
+    pub fn push_reducer(&mut self, reducer: Reducer<'a, F>) -> usize {
         let idx = self.reducers.len();
         self.sugar = self.sugar.max(reducer.sugar);
         self.reducers.push(reducer);
@@ -343,14 +343,11 @@ impl<'a> ReducerHeap<'a> {
     /// to zero. `final_sugar` is the running sugar after all
     /// reducers were added, useful for the caller to update the
     /// LObject's sugar metadata.
-    pub fn reduce_to_normal_form<F>(mut self, mut find_divisor: F) -> (Poly, u32)
+    pub fn reduce_to_normal_form<DF>(mut self, mut find_divisor: DF) -> (Poly<F>, u32)
     where
-        F: FnMut(&Monomial) -> Option<(&'a Poly, u32)>,
+        DF: FnMut(&Monomial) -> Option<(&'a Poly<F>, u32)>,
     {
-        let mut survivor_terms: Vec<(Coeff, Monomial)> = Vec::new();
-        // Field is Copy; take an owned copy so the borrow doesn't
-        // conflict with the &mut self calls below.
-        let f = *self.ring.field();
+        let mut survivor_terms: Vec<(F, Monomial)> = Vec::new();
 
         while let Some((c, m)) = self.pop_with_cancellation() {
             match find_divisor(&m) {
@@ -364,10 +361,10 @@ impl<'a> ReducerHeap<'a> {
                         .expect("find_divisor's contract: lm(g) divides m");
                     debug_assert_eq!(
                         g.lm_coeff(),
-                        1,
+                        F::one(),
                         "basis polynomials must be monic"
                     );
-                    let coeff = f.neg(c);
+                    let coeff = -c;
                     let m_deg = multiplier.total_deg();
                     let new_sugar = g_sugar.saturating_add(m_deg);
                     // **Cursor pre-advanced by one**, not at leading:
@@ -429,7 +426,7 @@ impl<'a> ReducerHeap<'a> {
     /// is advanced past its emitted term. If the resulting sum is
     /// zero, the chain cancelled and we recurse on the next leader;
     /// if non-zero, that's the leader the caller wants.
-    pub fn pop_with_cancellation(&mut self) -> Option<(Coeff, Monomial)> {
+    pub fn pop_with_cancellation(&mut self) -> Option<(F, Monomial)> {
         loop {
             let max_node = self.heap.pop()?;
             // Collect the contributing reducer indices and compute
@@ -444,8 +441,7 @@ impl<'a> ReducerHeap<'a> {
             // cursor is simpler and works on both Poly backends.
             let (r_c, r_m) = r.cursor.term().expect("just pushed; live cursor");
             let mono = r.multiplier.mul(r_m, &self.ring);
-            let f = self.ring.field();
-            let mut total_coeff = f.mul(r.coeff, r_c);
+            let mut total_coeff = r.coeff * r_c;
 
             // Advance the max contributor.
             let mut to_advance: Vec<usize> = Vec::with_capacity(2);
@@ -459,8 +455,8 @@ impl<'a> ReducerHeap<'a> {
                 let next_node = self.heap.pop().unwrap();
                 let nr = &self.reducers[next_node.reducer_idx];
                 let (nr_c, _nr_m) = nr.cursor.term().expect("just pushed; live cursor");
-                let next_coeff = f.mul(nr.coeff, nr_c);
-                total_coeff = f.add(total_coeff, next_coeff);
+                let next_coeff = nr.coeff * nr_c;
+                total_coeff += next_coeff;
                 to_advance.push(next_node.reducer_idx);
             }
 
@@ -469,7 +465,7 @@ impl<'a> ReducerHeap<'a> {
                 self.advance_reducer(idx);
             }
 
-            if total_coeff != 0 {
+            if !total_coeff.is_zero() {
                 return Some((total_coeff, mono));
             }
             // total_coeff == 0: complete cancellation; loop and
@@ -481,17 +477,18 @@ impl<'a> ReducerHeap<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::Field;
+    use ark_bls12_381::Fr;
+    use ark_ff::One;
     use crate::ordering::MonoOrder;
 
-    fn mk_ring(nvars: u32) -> Arc<Ring> {
-        Arc::new(Ring::new(nvars, MonoOrder::DegRevLex, Field::new(32003).unwrap()).unwrap())
+    fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
+        Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
     }
 
     #[test]
     fn empty_reducer_heap_constructs() {
         let r = mk_ring(3);
-        let h = ReducerHeap::new(Arc::clone(&r), 0);
+        let h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
         assert_eq!(h.reducer_count(), 0);
         assert_eq!(h.heap_len(), 0);
         assert_eq!(h.sugar(), 0);
@@ -500,7 +497,7 @@ mod tests {
     #[test]
     fn initial_sugar_is_preserved() {
         let r = mk_ring(3);
-        let h = ReducerHeap::new(Arc::clone(&r), 17);
+        let h = ReducerHeap::<Fr>::new(Arc::clone(&r), 17);
         assert_eq!(h.sugar(), 17);
     }
 
@@ -603,7 +600,7 @@ mod tests {
     #[test]
     fn empty_heap_pop_and_peek_return_none() {
         let r = mk_ring(3);
-        let mut h = ReducerHeap::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
         assert!(h.heap_is_empty());
         assert!(h.peek_max().is_none());
         assert!(h.pop_max().is_none());
@@ -613,7 +610,7 @@ mod tests {
     #[test]
     fn push_then_pop_single_node() {
         let r = mk_ring(3);
-        let mut h = ReducerHeap::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
         let n = HeapNode {
             cmp_key: [1, 2, 3, 4],
             reducer_idx: 42,
@@ -636,7 +633,7 @@ mod tests {
         for &seed in &[0x1234_5678_9abc_def0u64, 0xdead_beef_cafe_babe, 1, 2, 0xff_ff] {
             for &n in &[1usize, 2, 5, 16, 64, 200] {
                 let nodes = pseudo_random_nodes(n, seed);
-                let mut h = ReducerHeap::new(Arc::clone(&r), 0);
+                let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
                 for node in &nodes {
                     h.push_node(node.clone());
                 }
@@ -662,14 +659,14 @@ mod tests {
         // that the next pop_max returns.
         let r = mk_ring(3);
         let nodes = pseudo_random_nodes(50, 0xfeed_face);
-        let mut h = ReducerHeap::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
         for node in &nodes {
             h.push_node(node.clone());
             let peek_key = h.peek_max().unwrap().cmp_key;
             // Don't actually pop — instead, verify that on the
             // *next* pop later we'd see this key. Take a snapshot
             // by cloning the heap state for the check.
-            let mut h2 = ReducerHeap::new(Arc::clone(&r), 0);
+            let mut h2 = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
             // Re-build h2 from the underlying BinaryHeap's iterator
             // to avoid moving h.
             for n2 in h.heap.iter() {
@@ -687,7 +684,7 @@ mod tests {
         // lifecycle that pop-with-cancellation will exercise).
         let r = mk_ring(3);
         let nodes = pseudo_random_nodes(30, 0xa1b2_c3d4);
-        let mut h = ReducerHeap::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
 
         // Push first 20.
         for n in &nodes[..20] {
@@ -719,7 +716,7 @@ mod tests {
     use crate::monomial::Monomial;
     use crate::poly::Poly;
 
-    fn mono(r: &Ring, e: &[u32]) -> Monomial {
+    fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
         Monomial::from_exponents(r, e).unwrap()
     }
 
@@ -727,8 +724,8 @@ mod tests {
     /// into a Vec until the heap drains. Used as a "drive the
     /// reducer to completion" pattern in tests.
     fn drain_with_cancellation<'a>(
-        h: &mut ReducerHeap<'a>,
-    ) -> Vec<(Coeff, Monomial)> {
+        h: &mut ReducerHeap<'a, Fr>,
+    ) -> Vec<(Fr, Monomial)> {
         let mut out = Vec::new();
         while let Some(pair) = h.pop_with_cancellation() {
             out.push(pair);
@@ -746,16 +743,16 @@ mod tests {
         let p = Poly::from_terms(
             &r,
             vec![
-                (5, mono(&r, &[3, 0, 0])),  // x_0^3
-                (2, mono(&r, &[1, 1, 0])),  // x_0 x_1
-                (1, mono(&r, &[0, 0, 2])),  // x_2^2
+                (Fr::from(5u64), mono(&r, &[3, 0, 0])),  // x_0^3
+                (Fr::from(2u64), mono(&r, &[1, 1, 0])),  // x_0 x_1
+                (Fr::from(1u64), mono(&r, &[0, 0, 2])),  // x_2^2
             ],
         );
-        let mut h = ReducerHeap::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
         h.push_reducer(Reducer {
             poly: &p,
             multiplier: one.clone(),
-            coeff: 1,
+            coeff: Fr::one(),
             cursor: p.cursor(),
             sugar: 3,
         });
@@ -765,11 +762,11 @@ mod tests {
         assert_eq!(out.len(), 3);
         // Terms emerge in descending degrevlex order — same as the
         // source polynomial's canonical order.
-        assert_eq!(out[0].0, 5);
+        assert_eq!(out[0].0, Fr::from(5u64));
         assert_eq!(out[0].1, mono(&r, &[3, 0, 0]));
-        assert_eq!(out[1].0, 2);
+        assert_eq!(out[1].0, Fr::from(2u64));
         assert_eq!(out[1].1, mono(&r, &[1, 1, 0]));
-        assert_eq!(out[2].0, 1);
+        assert_eq!(out[2].0, Fr::from(1u64));
         assert_eq!(out[2].1, mono(&r, &[0, 0, 2]));
     }
 
@@ -781,19 +778,18 @@ mod tests {
         let p = Poly::from_terms(
             &r,
             vec![
-                (5, mono(&r, &[2, 0, 0])),
-                (3, mono(&r, &[0, 1, 0])),
+                (Fr::from(5u64), mono(&r, &[2, 0, 0])),
+                (Fr::from(3u64), mono(&r, &[0, 1, 0])),
             ],
         );
         let one = Monomial::one(&r);
-        let f = r.field();
-        let neg_one = f.neg(1); // = p - 1 in Z/p
+        let neg_one = -Fr::one();
 
-        let mut h = ReducerHeap::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
         h.push_reducer(Reducer {
             poly: &p,
             multiplier: one.clone(),
-            coeff: 1,
+            coeff: Fr::one(),
             cursor: p.cursor(),
             sugar: 2,
         });
@@ -817,49 +813,38 @@ mod tests {
     fn partial_cancellation_yields_remainder() {
         // p = 5*x^2 + 3*y, q = 2*x^2 + 7*z.
         // 1 * p + 1 * q  →  (5+2)*x^2 + 3*y + 7*z
-        // (assumed degrevlex: x^2 > y > z by degree, then by var index)
         let r = mk_ring(3);
         let p = Poly::from_terms(
             &r,
-            vec![(5, mono(&r, &[2, 0, 0])), (3, mono(&r, &[0, 1, 0]))],
+            vec![(Fr::from(5u64), mono(&r, &[2, 0, 0])), (Fr::from(3u64), mono(&r, &[0, 1, 0]))],
         );
         let q = Poly::from_terms(
             &r,
-            vec![(2, mono(&r, &[2, 0, 0])), (7, mono(&r, &[0, 0, 1]))],
+            vec![(Fr::from(2u64), mono(&r, &[2, 0, 0])), (Fr::from(7u64), mono(&r, &[0, 0, 1]))],
         );
         let one = Monomial::one(&r);
-        let mut h = ReducerHeap::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
         h.push_reducer(Reducer {
             poly: &p,
             multiplier: one.clone(),
-            coeff: 1,
+            coeff: Fr::one(),
             cursor: p.cursor(),
             sugar: 2,
         });
         h.push_reducer(Reducer {
             poly: &q,
             multiplier: one,
-            coeff: 1,
+            coeff: Fr::one(),
             cursor: q.cursor(),
             sugar: 2,
         });
         let out = drain_with_cancellation(&mut h);
-        // Three distinct monomials in the result: x^2 with combined
-        // coeff 7, then either y or z next (degrevlex compares by
-        // total degree first → both y and z are degree 1; then
-        // tie-break by largest-index differing variable: z wins
-        // tie-break, so y < z is wrong in degrevlex... let me verify).
-        //
-        // Degrevlex tie-break for two degree-1 monomials y vs z:
-        // largest index where exps differ: z's index (2) > y's (1).
-        // At that index: y has 0, z has 1. Smaller wins → y > z.
-        // So order is: x^2 > y > z.
         assert_eq!(out.len(), 3);
-        assert_eq!(out[0].0, 7);
+        assert_eq!(out[0].0, Fr::from(7u64));
         assert_eq!(out[0].1, mono(&r, &[2, 0, 0]));
-        assert_eq!(out[1].0, 3);
+        assert_eq!(out[1].0, Fr::from(3u64));
         assert_eq!(out[1].1, mono(&r, &[0, 1, 0]));
-        assert_eq!(out[2].0, 7);
+        assert_eq!(out[2].0, Fr::from(7u64));
         assert_eq!(out[2].1, mono(&r, &[0, 0, 1]));
     }
 
@@ -868,13 +853,11 @@ mod tests {
         // Property: pushing two reducers (1*p, 1*q) into the heap
         // and draining via pop_with_cancellation must yield the
         // same term sequence as p.add(q) does via poly::merge.
-        // Verifies the heap reducer's output agrees with the
-        // existing geobucket-equivalent (Poly::add) on simple
-        // sum cases.
         let r = mk_ring(4);
-        let pairs = vec![
+        #[allow(clippy::type_complexity)]
+        let pairs: Vec<(Vec<(u64, Vec<u32>)>, Vec<(u64, Vec<u32>)>)> = vec![
             (
-                vec![(3u32, vec![2, 1, 0, 0]), (5, vec![1, 0, 1, 0])],
+                vec![(3, vec![2, 1, 0, 0]), (5, vec![1, 0, 1, 0])],
                 vec![(2, vec![2, 1, 0, 0]), (4, vec![0, 1, 1, 0])],
             ),
             (
@@ -891,36 +874,36 @@ mod tests {
                 &r,
                 p_terms
                     .into_iter()
-                    .map(|(c, e)| (c, mono(&r, &e)))
+                    .map(|(c, e)| (Fr::from(c), mono(&r, &e)))
                     .collect(),
             );
             let q = Poly::from_terms(
                 &r,
                 q_terms
                     .into_iter()
-                    .map(|(c, e)| (c, mono(&r, &e)))
+                    .map(|(c, e)| (Fr::from(c), mono(&r, &e)))
                     .collect(),
             );
 
             // Reference: Poly::add via the geobucket-friendly merge.
             let want = p.add(&q, &r);
-            let want_terms: Vec<(Coeff, Monomial)> =
+            let want_terms: Vec<(Fr, Monomial)> =
                 want.iter().map(|(c, m)| (c, m.clone())).collect();
 
             // Heap reducer: 1*p + 1*q.
             let one = Monomial::one(&r);
-            let mut h = ReducerHeap::new(Arc::clone(&r), 0);
+            let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
             h.push_reducer(Reducer {
                 poly: &p,
                 multiplier: one.clone(),
-                coeff: 1,
+                coeff: Fr::one(),
                 cursor: p.cursor(),
                 sugar: 0,
             });
             h.push_reducer(Reducer {
                 poly: &q,
                 multiplier: one,
-                coeff: 1,
+                coeff: Fr::one(),
                 cursor: q.cursor(),
                 sugar: 0,
             });
@@ -936,11 +919,10 @@ mod tests {
     /// Equivalent to the heap reducer but algorithmically distinct;
     /// used as the property-test oracle.
     fn reference_reduce(
-        ring: &Ring,
-        f: Poly,
-        basis: &[Poly],
-    ) -> Poly {
-        let field = ring.field();
+        ring: &Ring<Fr>,
+        f: Poly<Fr>,
+        basis: &[Poly<Fr>],
+    ) -> Poly<Fr> {
         let mut current = f;
         loop {
             if current.is_zero() {
@@ -957,7 +939,7 @@ mod tests {
                 // Irreducible leader: pop it off, recurse on the tail.
                 // Easier: just emit the head into a survivor and
                 // continue with the tail.
-                let mut survivor_terms: Vec<(Coeff, Monomial)> = Vec::new();
+                let mut survivor_terms: Vec<(Fr, Monomial)> = Vec::new();
                 let mut working = current;
                 'outer: loop {
                     if working.is_zero() {
@@ -972,7 +954,7 @@ mod tests {
                         let g = &basis[j];
                         let g_lm = g.leading().unwrap().1;
                         let multiplier = lm2.div(g_lm, ring).unwrap();
-                        debug_assert_eq!(g.lm_coeff(), 1, "basis must be monic");
+                        debug_assert_eq!(g.lm_coeff(), Fr::one(), "basis must be monic");
                         // working -= lc2 * multiplier * g
                         working = working.sub_mul_term(lc2, &multiplier, g, ring);
                         continue 'outer;
@@ -982,7 +964,6 @@ mod tests {
                         working = working.drop_leading();
                     }
                 }
-                let _ = field;
                 if survivor_terms.is_empty() {
                     return Poly::zero();
                 }
@@ -992,7 +973,7 @@ mod tests {
             let g = &basis[idx];
             let g_lm = g.leading().unwrap().1;
             let multiplier = lm.div(g_lm, ring).unwrap();
-            debug_assert_eq!(g.lm_coeff(), 1, "basis must be monic");
+            debug_assert_eq!(g.lm_coeff(), Fr::one(), "basis must be monic");
             current = current.sub_mul_term(lc, &multiplier, g, ring);
         }
     }
@@ -1000,21 +981,21 @@ mod tests {
     /// Helper: run the heap reducer to normal form against a basis,
     /// using the same first-divisor-found policy as the reference.
     fn heap_reduce<'a>(
-        ring: Arc<Ring>,
-        f: &'a Poly,
-        basis: &'a [Poly],
+        ring: Arc<Ring<Fr>>,
+        f: &'a Poly<Fr>,
+        basis: &'a [Poly<Fr>],
         sugars: &[u32],
-    ) -> Poly {
-        let mut h = ReducerHeap::new(Arc::clone(&ring), f.lm_deg());
+    ) -> Poly<Fr> {
+        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&ring), f.lm_deg());
         let one = Monomial::one(&ring);
         h.push_reducer(Reducer {
             poly: f,
             multiplier: one,
-            coeff: 1,
+            coeff: Fr::one(),
             cursor: f.cursor(),
             sugar: f.lm_deg(),
         });
-        let basis_owned: Vec<&Poly> = basis.iter().collect();
+        let basis_owned: Vec<&Poly<Fr>> = basis.iter().collect();
         let (out, _sugar) = h.reduce_to_normal_form(|leader| {
             for (idx, g) in basis_owned.iter().enumerate() {
                 if g.is_zero() {
@@ -1037,33 +1018,26 @@ mod tests {
         let f = Poly::from_terms(
             &r,
             vec![
-                (5, mono(&r, &[1, 0, 0])),
-                (3, mono(&r, &[0, 1, 0])),
-                (2, mono(&r, &[0, 0, 1])),
+                (Fr::from(5u64), mono(&r, &[1, 0, 0])),
+                (Fr::from(3u64), mono(&r, &[0, 1, 0])),
+                (Fr::from(2u64), mono(&r, &[0, 0, 1])),
             ],
         );
-        let basis: Vec<Poly> = vec![]; // empty basis
+        let basis: Vec<Poly<Fr>> = vec![]; // empty basis
         let got = heap_reduce(Arc::clone(&r), &f, &basis, &[]);
         assert_eq!(got, f);
     }
 
     #[test]
     fn single_step_reduction_matches_reference() {
-        // Singular's textbook example, simplified:
-        // Ring k[x, y, z], char 32003.
-        // basis = { g = x }  (lm = x)
-        // f = x + y + z
-        // Reduce: f's leader x is divisible by g's leader x.
-        // multiplier = 1, subtract 1*1*g = x. Result: y + z.
-        // y not divisible by x, z not divisible by x → survivor = y + z.
         let r = mk_ring(3);
-        let g = Poly::from_terms(&r, vec![(1, mono(&r, &[1, 0, 0]))]);
+        let g = Poly::from_terms(&r, vec![(Fr::one(), mono(&r, &[1, 0, 0]))]);
         let f = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 0, 0])),
-                (1, mono(&r, &[0, 1, 0])),
-                (1, mono(&r, &[0, 0, 1])),
+                (Fr::one(), mono(&r, &[1, 0, 0])),
+                (Fr::one(), mono(&r, &[0, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 0, 1])),
             ],
         );
         let basis = vec![g];
@@ -1074,8 +1048,8 @@ mod tests {
         let expected = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[0, 1, 0])),
-                (1, mono(&r, &[0, 0, 1])),
+                (Fr::one(), mono(&r, &[0, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 0, 1])),
             ],
         );
         assert_eq!(got, expected);
@@ -1083,16 +1057,14 @@ mod tests {
 
     #[test]
     fn multi_step_reduction_matches_reference() {
-        // basis = { g0 = x - y, g1 = y - z }  (after monic norm.)
-        // f = x  →  reduce by g0 (x divides x) →  y  →  reduce by g1 → z
-        // → z not reducible → survivor = z.
+        // basis = { g0 = x - y, g1 = y - z }
         let r = mk_ring(3);
         // g0 = x - y. lm = x, lc = 1; tail = -y.
-        let neg_one = r.field().neg(1);
+        let neg_one = -Fr::one();
         let g0 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 0, 0])),
+                (Fr::one(), mono(&r, &[1, 0, 0])),
                 (neg_one, mono(&r, &[0, 1, 0])),
             ],
         );
@@ -1100,33 +1072,32 @@ mod tests {
         let g1 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[0, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 1, 0])),
                 (neg_one, mono(&r, &[0, 0, 1])),
             ],
         );
-        let f = Poly::from_terms(&r, vec![(1, mono(&r, &[1, 0, 0]))]);
+        let f = Poly::from_terms(&r, vec![(Fr::one(), mono(&r, &[1, 0, 0]))]);
         let basis = vec![g0, g1];
         let got = heap_reduce(Arc::clone(&r), &f, &basis, &[1, 1]);
         let want = reference_reduce(&r, f, &basis);
         assert_eq!(got, want);
-        let expected = Poly::from_terms(&r, vec![(1, mono(&r, &[0, 0, 1]))]);
+        let expected = Poly::from_terms(&r, vec![(Fr::one(), mono(&r, &[0, 0, 1]))]);
         assert_eq!(got, expected);
     }
 
     #[test]
     fn reduces_to_zero_when_input_is_in_ideal() {
         // basis = { g = x - 1 } in k[x] (1 var).
-        // f = x^3 - 1 = (x-1)(x^2 + x + 1) is in the ideal generated by g.
-        // Normal form should be 0.
+        // f = x^3 - 1.
         let r = mk_ring(1);
-        let neg_one = r.field().neg(1);
+        let neg_one = -Fr::one();
         let g = Poly::from_terms(
             &r,
-            vec![(1, mono(&r, &[1])), (neg_one, mono(&r, &[0]))],
+            vec![(Fr::one(), mono(&r, &[1])), (neg_one, mono(&r, &[0]))],
         );
         let f = Poly::from_terms(
             &r,
-            vec![(1, mono(&r, &[3])), (neg_one, mono(&r, &[0]))],
+            vec![(Fr::one(), mono(&r, &[3])), (neg_one, mono(&r, &[0]))],
         );
         let basis = vec![g];
         let got = heap_reduce(Arc::clone(&r), &f, &basis, &[1]);
@@ -1142,9 +1113,9 @@ mod tests {
         // driver produces, verify the heap reducer's output
         // exactly matches the reference reducer's output.
         let r = mk_ring(3);
-        let neg_one = r.field().neg(1);
+        let neg_one = -Fr::one();
 
-        type TermSpec = (Coeff, Vec<u32>);
+        type TermSpec = (Fr, Vec<u32>);
         type PolySpec = Vec<TermSpec>;
         type Case = (Vec<PolySpec>, PolySpec);
 
@@ -1152,33 +1123,33 @@ mod tests {
             // basis = { x - y, y^2 - 1 }, f = x^2
             (
                 vec![
-                    vec![(1, vec![1, 0, 0]), (neg_one, vec![0, 1, 0])],
-                    vec![(1, vec![0, 2, 0]), (neg_one, vec![0, 0, 0])],
+                    vec![(Fr::one(), vec![1, 0, 0]), (neg_one, vec![0, 1, 0])],
+                    vec![(Fr::one(), vec![0, 2, 0]), (neg_one, vec![0, 0, 0])],
                 ],
-                vec![(1, vec![2, 0, 0])],
+                vec![(Fr::one(), vec![2, 0, 0])],
             ),
             // basis = { x*y - z }, f = x*y*z
             (
                 vec![
-                    vec![(1, vec![1, 1, 0]), (neg_one, vec![0, 0, 1])],
+                    vec![(Fr::one(), vec![1, 1, 0]), (neg_one, vec![0, 0, 1])],
                 ],
-                vec![(1, vec![1, 1, 1])],
+                vec![(Fr::one(), vec![1, 1, 1])],
             ),
             // Empty basis: f reduces to itself.
-            (vec![], vec![(3, vec![2, 0, 1]), (5, vec![0, 1, 1])]),
+            (vec![], vec![(Fr::from(3u64), vec![2, 0, 1]), (Fr::from(5u64), vec![0, 1, 1])]),
             // basis = { x }, f = x^3 + x*y + 7  →  survivor = 7
             (
-                vec![vec![(1, vec![1, 0, 0])]],
+                vec![vec![(Fr::one(), vec![1, 0, 0])]],
                 vec![
-                    (1, vec![3, 0, 0]),
-                    (1, vec![1, 1, 0]),
-                    (7, vec![0, 0, 0]),
+                    (Fr::one(), vec![3, 0, 0]),
+                    (Fr::one(), vec![1, 1, 0]),
+                    (Fr::from(7u64), vec![0, 0, 0]),
                 ],
             ),
         ];
 
         for (basis_terms, f_terms) in cases {
-            let basis: Vec<Poly> = basis_terms
+            let basis: Vec<Poly<Fr>> = basis_terms
                 .into_iter()
                 .map(|terms| {
                     Poly::from_terms(
@@ -1210,14 +1181,14 @@ mod tests {
     #[test]
     fn sugar_is_max_over_pushed_reducers() {
         let r = mk_ring(2);
-        let p = Poly::from_terms(&r, vec![(1, mono(&r, &[1, 0]))]);
+        let p = Poly::from_terms(&r, vec![(Fr::one(), mono(&r, &[1, 0]))]);
         let one = Monomial::one(&r);
-        let mut h = ReducerHeap::new(Arc::clone(&r), 7);
+        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 7);
         assert_eq!(h.sugar(), 7);
         h.push_reducer(Reducer {
             poly: &p,
             multiplier: one.clone(),
-            coeff: 1,
+            coeff: Fr::one(),
             cursor: p.cursor(),
             sugar: 3,
         });
@@ -1226,7 +1197,7 @@ mod tests {
         h.push_reducer(Reducer {
             poly: &p,
             multiplier: one,
-            coeff: 1,
+            coeff: Fr::one(),
             cursor: p.cursor(),
             sugar: 12,
         });
@@ -1240,7 +1211,7 @@ mod tests {
         // reducer_idx should both be poppable. Order between
         // them is unspecified, but neither should be lost.
         let r = mk_ring(3);
-        let mut h = ReducerHeap::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
         let a = HeapNode {
             cmp_key: [9, 0, 0, 0],
             reducer_idx: 1,

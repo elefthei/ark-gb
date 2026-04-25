@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use crate::field::Coeff;
+use crate::field::Field;
 use crate::gm::enterpairs;
 use crate::kbucket::KBucket;
 use crate::lobject::LObject;
@@ -53,7 +53,10 @@ use crate::sbasis::SBasis;
 /// output is still the reduced Gröbner basis — unique up to
 /// permutation — and the canonical sort removes the permutation
 /// ambiguity, so the output is still a function of the ideal.
-pub fn compute_gb(ring: Arc<Ring>, input: Vec<Poly>) -> Vec<Poly> {
+pub fn compute_gb<F: Field + Copy + Send + Sync + 'static>(
+    ring: Arc<Ring<F>>,
+    input: Vec<Poly<F>>,
+) -> Vec<Poly<F>> {
     let num_threads = ark_gb_threads();
     if num_threads == 1 {
         compute_gb_serial(ring, input)
@@ -82,7 +85,10 @@ fn ark_gb_threads() -> usize {
 /// The serial implementation of `compute_gb`. Exposed so the
 /// env-var dispatch can pick between serial and parallel without
 /// changing the public API.
-pub fn compute_gb_serial(ring: Arc<Ring>, input: Vec<Poly>) -> Vec<Poly> {
+pub fn compute_gb_serial<F: Field + Copy + Send + Sync + 'static>(
+    ring: Arc<Ring<F>>,
+    input: Vec<Poly<F>>,
+) -> Vec<Poly<F>> {
     let mut s_basis = SBasis::new();
     let mut l_set = LSet::new();
     let mut next_arrival: u64 = 0;
@@ -166,7 +172,7 @@ pub fn compute_gb_serial(ring: Arc<Ring>, input: Vec<Poly>) -> Vec<Poly> {
     // sorted. We sort **ascending** by leading monomial to match
     // Singular's `sort(G)[1]` convention (which "smaller polys come
     // first" calls out — the fixture files are in this order too).
-    let mut out: Vec<Poly> = s_basis.iter_active().map(|(_, p)| p.clone()).collect();
+    let mut out: Vec<Poly<F>> = s_basis.iter_active().map(|(_, p)| p.clone()).collect();
     out.sort_by(|a, b| {
         let lm_a = a.leading().expect("active basis element is nonzero").1;
         let lm_b = b.leading().expect("active basis element is nonzero").1;
@@ -195,11 +201,11 @@ pub fn compute_gb_serial(ring: Arc<Ring>, input: Vec<Poly>) -> Vec<Poly> {
 /// leader through it, so the pair still produces the right
 /// reduction. See the comment in `compute_gb`'s main loop for why
 /// this is the right contract.
-fn insert_and_generate_pairs_with_sugar(
-    ring: &Ring,
-    s_basis: &mut SBasis,
+fn insert_and_generate_pairs_with_sugar<F: Field + Copy + Send + Sync>(
+    ring: &Ring<F>,
+    s_basis: &mut SBasis<F>,
     l_set: &mut LSet,
-    h: Poly,
+    h: Poly<F>,
     sugar: u32,
     next_arrival: u64,
 ) -> u64 {
@@ -231,7 +237,11 @@ fn insert_and_generate_pairs_with_sugar(
 /// at the dispatch site, not at the function definition). The
 /// cargo test suite cross-validates them via the
 /// `geobucket_and_heap_reducer_agree` test below.
-fn reduce_lobject(lobj: &mut LObject, s_basis: &SBasis, ring: &Arc<Ring>) {
+fn reduce_lobject<F: Field + Copy + Send + Sync>(
+    lobj: &mut LObject<F>,
+    s_basis: &SBasis<F>,
+    ring: &Arc<Ring<F>>,
+) {
     #[cfg(not(feature = "heap_reducer"))]
     reduce_lobject_geobucket(lobj, s_basis, ring);
     #[cfg(feature = "heap_reducer")]
@@ -245,7 +255,11 @@ fn reduce_lobject(lobj: &mut LObject, s_basis: &SBasis, ring: &Arc<Ring>) {
 ///
 /// This is the default reducer (compiled into `reduce_lobject`
 /// when `--features heap_reducer` is *not* set).
-pub fn reduce_lobject_geobucket(lobj: &mut LObject, s_basis: &SBasis, ring: &Arc<Ring>) {
+pub fn reduce_lobject_geobucket<F: Field + Copy + Send + Sync>(
+    lobj: &mut LObject<F>,
+    s_basis: &SBasis<F>,
+    ring: &Arc<Ring<F>>,
+) {
     loop {
         if lobj.is_zero() {
             return;
@@ -274,7 +288,7 @@ pub fn reduce_lobject_geobucket(lobj: &mut LObject, s_basis: &SBasis, ring: &Arc
         // coefficient.
         let s = s_basis.poly(idx);
         let (s_lc, s_lm_ref) = s.leading().expect("non-redundant basis is nonzero");
-        debug_assert_eq!(s_lc, 1, "basis element should be monic");
+        debug_assert!(s_lc.is_one(), "basis element should be monic");
         let _ = s_lc;
         let m = lm
             .div(s_lm_ref, ring)
@@ -307,7 +321,11 @@ pub fn reduce_lobject_geobucket(lobj: &mut LObject, s_basis: &SBasis, ring: &Arc
 /// construction per reduction. If the v6 profile shows that as
 /// significant, the deferred LObject restructure (see ADR-008)
 /// would eliminate it.
-pub fn reduce_lobject_heap(lobj: &mut LObject, s_basis: &SBasis, ring: &Arc<Ring>) {
+pub fn reduce_lobject_heap<F: Field + Copy + Send + Sync>(
+    lobj: &mut LObject<F>,
+    s_basis: &SBasis<F>,
+    ring: &Arc<Ring<F>>,
+) {
     use crate::reducer::{Reducer, ReducerHeap};
 
     if lobj.is_zero() {
@@ -335,7 +353,7 @@ pub fn reduce_lobject_heap(lobj: &mut LObject, s_basis: &SBasis, ring: &Arc<Ring
     h.push_reducer(Reducer {
         poly: &initial_poly,
         multiplier: crate::monomial::Monomial::one(ring),
-        coeff: 1,
+        coeff: F::one(),
         cursor: initial_poly.cursor(),
         sugar: initial_sugar,
     });
@@ -366,11 +384,11 @@ pub fn reduce_lobject_heap(lobj: &mut LObject, s_basis: &SBasis, ring: &Arc<Ring
 ///
 /// See `~/ark_gb/docs/design-decisions.md` ADR-007 for the rationale.
 #[inline]
-fn find_divisor_idx(
-    s_basis: &SBasis,
+fn find_divisor_idx<F: Field + Copy + Send + Sync>(
+    s_basis: &SBasis<F>,
     lm_sev: u64,
     lm: &crate::monomial::Monomial,
-    ring: &Ring,
+    ring: &Ring<F>,
 ) -> Option<usize> {
     let sevs = s_basis.sevs();
     let lms = s_basis.lms();
@@ -424,7 +442,10 @@ use crate::simd::find_sev_match;
 /// tail-reduction passes are idempotent: the output of the first
 /// pass has all tail terms normal-form-reduced, so the second pass
 /// finds nothing further to do.
-fn tail_reduce_all(s_basis: &mut SBasis, ring: &Arc<Ring>) {
+fn tail_reduce_all<F: Field + Copy + Send + Sync>(
+    s_basis: &mut SBasis<F>,
+    ring: &Arc<Ring<F>>,
+) {
     let n = s_basis.len();
     for i in 0..n {
         if s_basis.is_redundant(i) {
@@ -475,12 +496,16 @@ fn tail_reduce_all(s_basis: &mut SBasis, ring: &Arc<Ring>) {
 /// `done` and re-scan the bucket for its new leader. The parked
 /// terms accumulate in strict descending order because
 /// `extract_leading` always yields the bucket's current max.
-fn reduce_tail(tail: Poly, s_basis: &SBasis, ring: &Arc<Ring>) -> Poly {
+fn reduce_tail<F: Field + Copy + Send + Sync>(
+    tail: Poly<F>,
+    s_basis: &SBasis<F>,
+    ring: &Arc<Ring<F>>,
+) -> Poly<F> {
     if tail.is_zero() {
         return tail;
     }
     let mut bucket = KBucket::from_poly(Arc::clone(ring), tail);
-    let mut done: Vec<(Coeff, crate::monomial::Monomial)> = Vec::new();
+    let mut done: Vec<(F, crate::monomial::Monomial)> = Vec::new();
 
     // clippy::while_let_loop would suggest a `while let Some((c,
     // m_ref)) = bucket.leading() { .. }`, but `bucket.leading()`
@@ -532,7 +557,7 @@ fn reduce_tail(tail: Poly, s_basis: &SBasis, ring: &Arc<Ring>) -> Poly {
                 // `(c / s_lc) == c` and we skip the Fermat inversion.
                 let s = s_basis.poly(idx);
                 let (s_lc, s_lm_ref) = s.leading().expect("non-redundant");
-                debug_assert_eq!(s_lc, 1, "basis element should be monic");
+                debug_assert!(s_lc.is_one(), "basis element should be monic");
                 let _ = s_lc;
                 let mult = m.div(s_lm_ref, ring).expect("divisibility checked");
                 bucket.minus_m_mult_p(&mult, c, s);
@@ -557,8 +582,13 @@ fn reduce_tail(tail: Poly, s_basis: &SBasis, ring: &Arc<Ring>) -> Poly {
 /// ring's ordering. `(lc, lm)` is prepended and the resulting vector
 /// is already in strictly-descending order with no duplicates, so we
 /// take the fast path and skip the sort.
-fn prepend_leading(lc: Coeff, lm: &crate::monomial::Monomial, tail: Poly, ring: &Ring) -> Poly {
-    let mut terms: Vec<(Coeff, crate::monomial::Monomial)> = Vec::with_capacity(tail.len() + 1);
+fn prepend_leading<F: Field + Copy + Send + Sync>(
+    lc: F,
+    lm: &crate::monomial::Monomial,
+    tail: Poly<F>,
+    ring: &Ring<F>,
+) -> Poly<F> {
+    let mut terms: Vec<(F, crate::monomial::Monomial)> = Vec::with_capacity(tail.len() + 1);
     terms.push((lc, lm.clone()));
     for (c, m) in tail.iter() {
         terms.push((c, m.clone()));
@@ -569,21 +599,22 @@ fn prepend_leading(lc: Coeff, lm: &crate::monomial::Monomial, tail: Poly, ring: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::Field;
     use crate::monomial::Monomial;
     use crate::ordering::MonoOrder;
+    use ark_bls12_381::Fr;
+    use ark_ff::One;
 
-    fn mk_ring(nvars: u32, p: u32) -> Arc<Ring> {
-        Arc::new(Ring::new(nvars, MonoOrder::DegRevLex, Field::new(p).unwrap()).unwrap())
+    fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
+        Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
     }
 
-    fn mono(r: &Ring, e: &[u32]) -> Monomial {
+    fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
         Monomial::from_exponents(r, e).unwrap()
     }
 
     #[test]
     fn empty_input_gives_empty_gb() {
-        let r = mk_ring(3, 32003);
+        let r = mk_ring(3);
         let gb = compute_gb(Arc::clone(&r), vec![]);
         assert!(gb.is_empty());
     }
@@ -608,55 +639,55 @@ mod tests {
     #[test]
     fn geobucket_and_heap_reducer_agree() {
         use crate::sbasis::SBasis;
-        let r = mk_ring(3, 32003);
-        let neg_one = r.field().neg(1);
+        let r = mk_ring(3);
+        let neg_one = -Fr::one();
 
-        type TermSpec = (Coeff, Vec<u32>);
+        type TermSpec = (Fr, Vec<u32>);
         type PolySpec = Vec<TermSpec>;
         type Case = (Vec<PolySpec>, PolySpec);
 
         let cases: Vec<Case> = vec![
             // (1) Empty basis: lobject = x + y + z reduces to itself.
             (vec![], vec![
-                (1, vec![1, 0, 0]),
-                (1, vec![0, 1, 0]),
-                (1, vec![0, 0, 1]),
+                (Fr::one(), vec![1, 0, 0]),
+                (Fr::one(), vec![0, 1, 0]),
+                (Fr::one(), vec![0, 0, 1]),
             ]),
             // (2) basis = {x}, lobject = x + y + z → reduces to y + z.
-            (vec![vec![(1, vec![1, 0, 0])]], vec![
-                (1, vec![1, 0, 0]),
-                (1, vec![0, 1, 0]),
-                (1, vec![0, 0, 1]),
+            (vec![vec![(Fr::one(), vec![1, 0, 0])]], vec![
+                (Fr::one(), vec![1, 0, 0]),
+                (Fr::one(), vec![0, 1, 0]),
+                (Fr::one(), vec![0, 0, 1]),
             ]),
             // (3) basis = {x - y}, lobject = x → reduces to y
             // (after subtracting 1*(x-y) = x - y, we get y).
             (
-                vec![vec![(1, vec![1, 0, 0]), (neg_one, vec![0, 1, 0])]],
-                vec![(1, vec![1, 0, 0])],
+                vec![vec![(Fr::one(), vec![1, 0, 0]), (neg_one, vec![0, 1, 0])]],
+                vec![(Fr::one(), vec![1, 0, 0])],
             ),
             // (4) basis = {x - y, y - z}, lobject = x → chain → z.
             (
                 vec![
-                    vec![(1, vec![1, 0, 0]), (neg_one, vec![0, 1, 0])],
-                    vec![(1, vec![0, 1, 0]), (neg_one, vec![0, 0, 1])],
+                    vec![(Fr::one(), vec![1, 0, 0]), (neg_one, vec![0, 1, 0])],
+                    vec![(Fr::one(), vec![0, 1, 0]), (neg_one, vec![0, 0, 1])],
                 ],
-                vec![(1, vec![1, 0, 0])],
+                vec![(Fr::one(), vec![1, 0, 0])],
             ),
             // (5) basis = {x - 1}, lobject = x^3 - 1 → reduces to 0.
             (
-                vec![vec![(1, vec![1, 0, 0]), (neg_one, vec![0, 0, 0])]],
-                vec![(1, vec![3, 0, 0]), (neg_one, vec![0, 0, 0])],
+                vec![vec![(Fr::one(), vec![1, 0, 0]), (neg_one, vec![0, 0, 0])]],
+                vec![(Fr::one(), vec![3, 0, 0]), (neg_one, vec![0, 0, 0])],
             ),
             // (6) basis = {x*y - z}, lobject = x*y*z → tail reduction.
             (
-                vec![vec![(1, vec![1, 1, 0]), (neg_one, vec![0, 0, 1])]],
-                vec![(1, vec![1, 1, 1])],
+                vec![vec![(Fr::one(), vec![1, 1, 0]), (neg_one, vec![0, 0, 1])]],
+                vec![(Fr::one(), vec![1, 1, 1])],
             ),
         ];
 
         for (basis_terms, f_terms) in cases {
             // Build the basis polynomials and load them into an SBasis.
-            let basis_polys: Vec<Poly> = basis_terms
+            let basis_polys: Vec<Poly<Fr>> = basis_terms
                 .into_iter()
                 .map(|terms| {
                     Poly::from_terms(
@@ -665,7 +696,7 @@ mod tests {
                     )
                 })
                 .collect();
-            let mut s_basis = SBasis::new();
+            let mut s_basis = SBasis::<Fr>::new();
             for p in &basis_polys {
                 s_basis.insert(&r, p.clone());
             }
@@ -745,15 +776,15 @@ mod tests {
 
     #[test]
     fn zero_input_gives_empty_gb() {
-        let r = mk_ring(3, 32003);
+        let r = mk_ring(3);
         let gb = compute_gb(Arc::clone(&r), vec![Poly::zero()]);
         assert!(gb.is_empty());
     }
 
     #[test]
     fn constant_input_gives_unit_gb() {
-        let r = mk_ring(3, 32003);
-        let one = Poly::monomial(&r, 1, Monomial::one(&r));
+        let r = mk_ring(3);
+        let one = Poly::monomial(&r, Fr::one(), Monomial::one(&r));
         let gb = compute_gb(Arc::clone(&r), vec![one.clone()]);
         assert_eq!(gb.len(), 1);
         assert_eq!(gb[0], one);
@@ -761,24 +792,24 @@ mod tests {
 
     #[test]
     fn constant_nonone_input_gives_unit_gb() {
-        let r = mk_ring(3, 32003);
-        let three = Poly::monomial(&r, 3, Monomial::one(&r));
+        let r = mk_ring(3);
+        let three = Poly::monomial(&r, Fr::from(3u64), Monomial::one(&r));
         let gb = compute_gb(Arc::clone(&r), vec![three]);
         assert_eq!(gb.len(), 1);
         // Must have been made monic.
-        assert_eq!(gb[0].lm_coeff(), 1);
+        assert_eq!(gb[0].lm_coeff(), Fr::one());
         assert_eq!(*gb[0].leading().unwrap().1, Monomial::one(&r));
     }
 
     #[test]
     fn single_generator_already_gb() {
         // xy - 1 is a Gröbner basis on its own.
-        let r = mk_ring(2, 32003);
+        let r = mk_ring(2);
         let f = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 1])),
-                (32002, mono(&r, &[0, 0])), // -1
+                (Fr::one(), mono(&r, &[1, 1])),
+                (-Fr::one(), mono(&r, &[0, 0])), // -1
             ],
         );
         let gb = compute_gb(Arc::clone(&r), vec![f.clone()]);
@@ -788,9 +819,9 @@ mod tests {
 
     #[test]
     fn two_monomials_already_gb() {
-        let r = mk_ring(2, 32003);
-        let x = Poly::monomial(&r, 1, mono(&r, &[1, 0]));
-        let y = Poly::monomial(&r, 1, mono(&r, &[0, 1]));
+        let r = mk_ring(2);
+        let x = Poly::monomial(&r, Fr::one(), mono(&r, &[1, 0]));
+        let y = Poly::monomial(&r, Fr::one(), mono(&r, &[0, 1]));
         let gb = compute_gb(Arc::clone(&r), vec![x.clone(), y.clone()]);
         // Coprime LMs ⇒ product criterion kills the pair. Reduced GB
         // is {x, y} (already reduced: no tail terms).
@@ -808,26 +839,26 @@ mod tests {
     fn cyclic3_over_f32003() {
         // x+y+z, xy+yz+zx, xyz-1 ⟶ reduced GB is
         // { x+y+z, y^2+yz+z^2, z^3-1 } (Singular reference).
-        let r = mk_ring(3, 32003);
+        let r = mk_ring(3);
         let f1 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 0, 0])),
-                (1, mono(&r, &[0, 1, 0])),
-                (1, mono(&r, &[0, 0, 1])),
+                (Fr::one(), mono(&r, &[1, 0, 0])),
+                (Fr::one(), mono(&r, &[0, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 0, 1])),
             ],
         );
         let f2 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 1, 0])),
-                (1, mono(&r, &[0, 1, 1])),
-                (1, mono(&r, &[1, 0, 1])),
+                (Fr::one(), mono(&r, &[1, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 1, 1])),
+                (Fr::one(), mono(&r, &[1, 0, 1])),
             ],
         );
         let f3 = Poly::from_terms(
             &r,
-            vec![(1, mono(&r, &[1, 1, 1])), (32002, mono(&r, &[0, 0, 0]))],
+            vec![(Fr::one(), mono(&r, &[1, 1, 1])), (-Fr::one(), mono(&r, &[0, 0, 0]))],
         );
         let gb = compute_gb(Arc::clone(&r), vec![f1, f2, f3]);
 
@@ -836,24 +867,24 @@ mod tests {
             Poly::from_terms(
                 &r,
                 vec![
-                    (1, mono(&r, &[1, 0, 0])),
-                    (1, mono(&r, &[0, 1, 0])),
-                    (1, mono(&r, &[0, 0, 1])),
+                    (Fr::one(), mono(&r, &[1, 0, 0])),
+                    (Fr::one(), mono(&r, &[0, 1, 0])),
+                    (Fr::one(), mono(&r, &[0, 0, 1])),
                 ],
             ),
             // y^2 + yz + z^2
             Poly::from_terms(
                 &r,
                 vec![
-                    (1, mono(&r, &[0, 2, 0])),
-                    (1, mono(&r, &[0, 1, 1])),
-                    (1, mono(&r, &[0, 0, 2])),
+                    (Fr::one(), mono(&r, &[0, 2, 0])),
+                    (Fr::one(), mono(&r, &[0, 1, 1])),
+                    (Fr::one(), mono(&r, &[0, 0, 2])),
                 ],
             ),
             // z^3 - 1
             Poly::from_terms(
                 &r,
-                vec![(1, mono(&r, &[0, 0, 3])), (32002, mono(&r, &[0, 0, 0]))],
+                vec![(Fr::one(), mono(&r, &[0, 0, 3])), (-Fr::one(), mono(&r, &[0, 0, 0]))],
             ),
         ];
         assert_eq!(gb, expected, "cyclic-3 reduced GB mismatch");
@@ -861,21 +892,21 @@ mod tests {
 
     #[test]
     fn determinism_same_input_same_output() {
-        let r = mk_ring(3, 32003);
+        let r = mk_ring(3);
         let f1 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 0, 0])),
-                (1, mono(&r, &[0, 1, 0])),
-                (1, mono(&r, &[0, 0, 1])),
+                (Fr::one(), mono(&r, &[1, 0, 0])),
+                (Fr::one(), mono(&r, &[0, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 0, 1])),
             ],
         );
         let f2 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 1, 0])),
-                (1, mono(&r, &[0, 1, 1])),
-                (1, mono(&r, &[1, 0, 1])),
+                (Fr::one(), mono(&r, &[1, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 1, 1])),
+                (Fr::one(), mono(&r, &[1, 0, 1])),
             ],
         );
         let gb1 = compute_gb(Arc::clone(&r), vec![f1.clone(), f2.clone()]);
@@ -885,26 +916,26 @@ mod tests {
 
     #[test]
     fn input_order_invariant_cyclic3() {
-        let r = mk_ring(3, 32003);
+        let r = mk_ring(3);
         let f1 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 0, 0])),
-                (1, mono(&r, &[0, 1, 0])),
-                (1, mono(&r, &[0, 0, 1])),
+                (Fr::one(), mono(&r, &[1, 0, 0])),
+                (Fr::one(), mono(&r, &[0, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 0, 1])),
             ],
         );
         let f2 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 1, 0])),
-                (1, mono(&r, &[0, 1, 1])),
-                (1, mono(&r, &[1, 0, 1])),
+                (Fr::one(), mono(&r, &[1, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 1, 1])),
+                (Fr::one(), mono(&r, &[1, 0, 1])),
             ],
         );
         let f3 = Poly::from_terms(
             &r,
-            vec![(1, mono(&r, &[1, 1, 1])), (32002, mono(&r, &[0, 0, 0]))],
+            vec![(Fr::one(), mono(&r, &[1, 1, 1])), (-Fr::one(), mono(&r, &[0, 0, 0]))],
         );
         let gb_a = compute_gb(Arc::clone(&r), vec![f1.clone(), f2.clone(), f3.clone()]);
         let gb_b = compute_gb(Arc::clone(&r), vec![f3.clone(), f1.clone(), f2.clone()]);
@@ -915,21 +946,21 @@ mod tests {
 
     #[test]
     fn idempotence() {
-        let r = mk_ring(3, 32003);
+        let r = mk_ring(3);
         let f1 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 0, 0])),
-                (1, mono(&r, &[0, 1, 0])),
-                (1, mono(&r, &[0, 0, 1])),
+                (Fr::one(), mono(&r, &[1, 0, 0])),
+                (Fr::one(), mono(&r, &[0, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 0, 1])),
             ],
         );
         let f2 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 1, 0])),
-                (1, mono(&r, &[0, 1, 1])),
-                (1, mono(&r, &[1, 0, 1])),
+                (Fr::one(), mono(&r, &[1, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 1, 1])),
+                (Fr::one(), mono(&r, &[1, 0, 1])),
             ],
         );
         let gb1 = compute_gb(Arc::clone(&r), vec![f1, f2]);

@@ -40,6 +40,7 @@ linked_list_poly_pool = []
 
 [dev-dependencies]
 proptest = "1"
+ark-bls12-381 = { git = "https://github.com/arkworks-rs/algebra.git", default-features = false, features = ["scalar_field"] }
 
 # Sanitisers are available only with `-Z sanitizer=thread` on nightly.
 # No build configuration needed in Cargo.toml.

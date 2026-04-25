@@ -50,7 +50,7 @@ use std::thread;
 
 use crate::bset::BSet;
 use crate::computation::Computation;
-use crate::field::Coeff;
+use crate::field::Field;
 use crate::kbucket::KBucket;
 use crate::lobject::LObject;
 use crate::lset::LSet;
@@ -83,11 +83,11 @@ impl std::error::Error for Cancelled {}
 ///
 /// Returns `Ok(basis)` on success. Returns `Err(Cancelled)` if the
 /// computation's cancel flag was set before completion.
-pub fn compute_gb_parallel(
-    ring: Arc<Ring>,
-    input: Vec<Poly>,
+pub fn compute_gb_parallel<F: Field + Copy + Send + Sync + 'static>(
+    ring: Arc<Ring<F>>,
+    input: Vec<Poly<F>>,
     num_threads: usize,
-) -> Result<Vec<Poly>, Cancelled> {
+) -> Result<Vec<Poly<F>>, Cancelled> {
     assert!(num_threads >= 1, "num_threads must be >= 1");
 
     let comp = Arc::new(Computation::new(Arc::clone(&ring)));
@@ -159,7 +159,7 @@ pub fn compute_gb_parallel(
 ///    retry; if not, exit (the computation is done).
 /// 3. Increment `in_flight`. Build the LObject, reduce it, and (if
 ///    non-zero) run enterpairs. Decrement `in_flight`.
-fn worker_loop(comp: Arc<Computation>) {
+fn worker_loop<F: Field + Copy + Send + Sync + 'static>(comp: Arc<Computation<F>>) {
     loop {
         if comp.is_cancelled() {
             return;
@@ -218,7 +218,7 @@ fn worker_loop(comp: Arc<Computation>) {
 /// problem: a worker may be about to insert a pair, so an empty L
 /// is not sufficient to declare done. We use `in_flight` as a
 /// witness that work may still arrive.
-fn pop_or_wait(comp: &Computation) -> Option<Pair> {
+fn pop_or_wait<F: Field + Copy + Send + Sync>(comp: &Computation<F>) -> Option<Pair> {
     loop {
         {
             let mut l = comp.l_set.lock();
@@ -248,7 +248,10 @@ fn pop_or_wait(comp: &Computation) -> Option<Pair> {
 
 /// Build an LObject from a pair, using a short-lived read lock on
 /// the basis.
-fn build_lobject_for_pair(comp: &Computation, pair: &Pair) -> Option<LObject> {
+fn build_lobject_for_pair<F: Field + Copy + Send + Sync>(
+    comp: &Computation<F>,
+    pair: &Pair,
+) -> Option<LObject<F>> {
     let s_i = comp.basis.poly(pair.i as usize);
     let s_j = comp.basis.poly(pair.j as usize);
     LObject::from_spoly(Arc::clone(&comp.ring), &s_i, &s_j, pair)
@@ -267,7 +270,10 @@ fn build_lobject_for_pair(comp: &Computation, pair: &Pair) -> Option<LObject> {
 /// reduces it serially. This matches the port plan §10.3 "start
 /// with 1 active LObject per worker" guidance. Follow-up
 /// (`ark_gb-perf`) can add pipeline-depth > 1.
-pub fn reduce_lobject_parallel(lobj: &mut LObject, comp: &Computation) {
+pub fn reduce_lobject_parallel<F: Field + Copy + Send + Sync>(
+    lobj: &mut LObject<F>,
+    comp: &Computation<F>,
+) {
     loop {
         if lobj.is_zero() {
             return;
@@ -290,7 +296,7 @@ pub fn reduce_lobject_parallel(lobj: &mut LObject, comp: &Computation) {
             .1
             .clone();
 
-        let divisor: Option<(Arc<Poly>, u32)> = {
+        let divisor: Option<(Arc<Poly<F>>, u32)> = {
             let snap = comp.basis.read_snapshot();
             let sevs = &snap.sevs;
             let polys = &snap.polys;
@@ -298,7 +304,7 @@ pub fn reduce_lobject_parallel(lobj: &mut LObject, comp: &Computation) {
             // Redundancy flags are atomic; read them in-line.
             let redundant = comp.basis.redundant.read().unwrap();
 
-            let mut found: Option<(Arc<Poly>, u32)> = None;
+            let mut found: Option<(Arc<Poly<F>>, u32)> = None;
             for idx in 0..polys.len() {
                 if redundant[idx].load(Ordering::Relaxed) {
                     continue;
@@ -324,7 +330,7 @@ pub fn reduce_lobject_parallel(lobj: &mut LObject, comp: &Computation) {
         // Perform the reduction step. Basis elements are monic, so
         // `s_lc == 1` and `inv_s_lc == 1`.
         let (s_lc, s_lm_ref) = s.leading().expect("nonzero");
-        debug_assert_eq!(s_lc, 1, "basis element should be monic");
+        debug_assert!(s_lc.is_one(), "basis element should be monic");
         let _ = s_lc;
         let m = lm
             .div(s_lm_ref, &comp.ring)
@@ -362,7 +368,11 @@ pub fn reduce_lobject_parallel(lobj: &mut LObject, comp: &Computation) {
 /// common case (no new divisors arrived) this is one scan and no
 /// reduction; in the rare case (a `1` got inserted during our
 /// reduction), we reduce `h` to zero and bail out.
-pub fn insert_and_enterpairs(comp: &Computation, h: Poly, h_sugar: u32) {
+pub fn insert_and_enterpairs<F: Field + Copy + Send + Sync>(
+    comp: &Computation<F>,
+    h: Poly<F>,
+    h_sugar: u32,
+) {
     // Hold the insert mutex for the full critical section:
     // stale-snapshot guard + push + enterpairs-merge + clearS.
     // Other workers continue popping from L and reducing against
@@ -399,7 +409,7 @@ pub fn insert_and_enterpairs(comp: &Computation, h: Poly, h_sugar: u32) {
     let basis_len;
     let sevs_snapshot: Vec<u64>;
     let lm_degs_snapshot: Vec<u32>;
-    let polys_snapshot: Vec<Arc<Poly>>;
+    let polys_snapshot: Vec<Arc<Poly<F>>>;
     let redundant_snapshot: Vec<bool>;
     {
         let snap = comp.basis.read_snapshot();
@@ -499,7 +509,11 @@ pub fn insert_and_enterpairs(comp: &Computation, h: Poly, h_sugar: u32) {
 /// [`insert_and_enterpairs`] for why it exists. It runs single-
 /// threaded (caller holds `insert_mutex`), so it can safely use the
 /// Poly-owning reducer rather than building a new bucket.
-fn reduce_survivor_final(comp: &Computation, h: Poly, h_sugar: u32) -> Option<(Poly, u32)> {
+fn reduce_survivor_final<F: Field + Copy + Send + Sync>(
+    comp: &Computation<F>,
+    h: Poly<F>,
+    h_sugar: u32,
+) -> Option<(Poly<F>, u32)> {
     let sugar = h_sugar;
     // Reuse the existing parallel reducer — it already takes a
     // snapshot per iteration, which is the behaviour we want.
@@ -519,13 +533,13 @@ fn reduce_survivor_final(comp: &Computation, h: Poly, h_sugar: u32) -> Option<(P
 /// Build one candidate pair `(s_idx, h_idx)`. Returns `None` if the
 /// product criterion prunes it.
 #[allow(clippy::too_many_arguments)]
-fn build_pair(
-    ring: &Ring,
+fn build_pair<F: Field + Copy + Send + Sync>(
+    ring: &Ring<F>,
     s_idx: u32,
     h_idx: u32,
     sevs: &[u64],
     lm_degs: &[u32],
-    polys: &[Arc<Poly>],
+    polys: &[Arc<Poly<F>>],
     h_lm: &Monomial,
     h_lm_sev: u64,
     h_sugar: u32,
@@ -554,7 +568,11 @@ fn build_pair(
     Some(Pair::new(s_idx, h_idx, lcm, sugar, arrival))
 }
 
-fn monomials_are_coprime(a: &Monomial, b: &Monomial, ring: &Ring) -> bool {
+fn monomials_are_coprime<F: Field + Copy + Send + Sync>(
+    a: &Monomial,
+    b: &Monomial,
+    ring: &Ring<F>,
+) -> bool {
     let n = ring.nvars();
     for i in 0..n {
         let ea = a.exponent(ring, i).expect("i < nvars");
@@ -570,7 +588,7 @@ fn monomials_are_coprime(a: &Monomial, b: &Monomial, ring: &Ring) -> bool {
 /// another pair's LCM. Equal LCMs keep the first (lowest index in
 /// B); later duplicates drop. Matches `gm::chain_crit_normal`
 /// phase 1.
-fn chain_crit_b_internal(ring: &Ring, b: &mut BSet) {
+fn chain_crit_b_internal<F: Field + Copy + Send + Sync>(ring: &Ring<F>, b: &mut BSet) {
     let n = b.len();
     let mut kill: Vec<bool> = vec![false; n];
     {
@@ -612,9 +630,9 @@ fn chain_crit_b_internal(ring: &Ring, b: &mut BSet) {
 /// Takes a mutable borrow on `L` (the caller holds the lock). Does
 /// all look-ups against the snapshot passed in, not the live basis —
 /// so this function is deterministic given its inputs.
-fn chain_crit_l_side(
-    ring: &Ring,
-    polys_snapshot: &[Arc<Poly>],
+fn chain_crit_l_side<F: Field + Copy + Send + Sync>(
+    ring: &Ring<F>,
+    polys_snapshot: &[Arc<Poly<F>>],
     h_lm: &Monomial,
     h_lm_sev: u64,
     h_idx: u32,
@@ -664,7 +682,7 @@ fn chain_crit_l_side(
 
 /// Tail-reduce every non-redundant basis element against the others,
 /// then return the canonically-sorted list of survivors.
-fn finalise_basis(comp: &Computation) -> Vec<Poly> {
+fn finalise_basis<F: Field + Copy + Send + Sync>(comp: &Computation<F>) -> Vec<Poly<F>> {
     // We're now single-threaded (all workers joined), so we can
     // move the polys out of the SharedSBasis. Take write locks and
     // extract the inner arrays.
@@ -682,7 +700,7 @@ fn finalise_basis(comp: &Computation) -> Vec<Poly> {
     // Extract owned polynomials. Each `Arc<Poly>` should have
     // refcount 1 by this point (no worker holds a clone), so
     // `Arc::try_unwrap` works cheaply.
-    let mut polys: Vec<Poly> = Vec::with_capacity(n);
+    let mut polys: Vec<Poly<F>> = Vec::with_capacity(n);
     for arc in inner.polys.drain(..) {
         match Arc::try_unwrap(arc) {
             Ok(p) => polys.push(p),
@@ -707,7 +725,7 @@ fn finalise_basis(comp: &Computation) -> Vec<Poly> {
     tail_reduce_all(&mut polys, &mut redundant_vec, &comp.ring);
 
     // Extract surviving polys and sort canonically.
-    let mut out: Vec<Poly> = polys
+    let mut out: Vec<Poly<F>> = polys
         .into_iter()
         .enumerate()
         .filter_map(|(i, p)| if redundant_vec[i] { None } else { Some(p) })
@@ -724,7 +742,11 @@ fn finalise_basis(comp: &Computation) -> Vec<Poly> {
 /// runs single-threaded after all workers have joined; no locking
 /// is needed. Logic matches `bba::tail_reduce_all` on the serial
 /// SBasis but operates on `Vec<Poly>` + `Vec<bool>` directly.
-fn tail_reduce_all(polys: &mut [Poly], redundant: &mut [bool], ring: &Arc<Ring>) {
+fn tail_reduce_all<F: Field + Copy + Send + Sync>(
+    polys: &mut [Poly<F>],
+    redundant: &mut [bool],
+    ring: &Arc<Ring<F>>,
+) {
     let n = polys.len();
     for i in 0..n {
         if redundant[i] {
@@ -753,12 +775,17 @@ fn tail_reduce_all(polys: &mut [Poly], redundant: &mut [bool], ring: &Arc<Ring>)
     }
 }
 
-fn reduce_tail(tail: Poly, polys: &[Poly], redundant: &[bool], ring: &Arc<Ring>) -> Poly {
+fn reduce_tail<F: Field + Copy + Send + Sync>(
+    tail: Poly<F>,
+    polys: &[Poly<F>],
+    redundant: &[bool],
+    ring: &Arc<Ring<F>>,
+) -> Poly<F> {
     if tail.is_zero() {
         return tail;
     }
     let mut bucket = KBucket::from_poly(Arc::clone(ring), tail);
-    let mut done: Vec<(Coeff, Monomial)> = Vec::new();
+    let mut done: Vec<(F, Monomial)> = Vec::new();
 
     #[allow(clippy::while_let_loop)]
     loop {
@@ -797,7 +824,7 @@ fn reduce_tail(tail: Poly, polys: &[Poly], redundant: &[bool], ring: &Arc<Ring>)
                 // the Fermat inversion.
                 let s = &polys[idx];
                 let (s_lc, s_lm_ref) = s.leading().expect("non-redundant");
-                debug_assert_eq!(s_lc, 1, "basis element should be monic");
+                debug_assert!(s_lc.is_one(), "basis element should be monic");
                 let _ = s_lc;
                 let mult = m.div(s_lm_ref, ring).expect("divisibility checked");
                 bucket.minus_m_mult_p(&mult, c, s);
@@ -812,8 +839,13 @@ fn reduce_tail(tail: Poly, polys: &[Poly], redundant: &[bool], ring: &Arc<Ring>)
     }
 }
 
-fn prepend_leading(lc: Coeff, lm: &Monomial, tail: Poly, ring: &Ring) -> Poly {
-    let mut terms: Vec<(Coeff, Monomial)> = Vec::with_capacity(tail.len() + 1);
+fn prepend_leading<F: Field + Copy + Send + Sync>(
+    lc: F,
+    lm: &Monomial,
+    tail: Poly<F>,
+    ring: &Ring<F>,
+) -> Poly<F> {
+    let mut terms: Vec<(F, Monomial)> = Vec::with_capacity(tail.len() + 1);
     terms.push((lc, lm.clone()));
     for (c, m) in tail.iter() {
         terms.push((c, m.clone()));
@@ -840,7 +872,7 @@ impl CancelHandle {
     }
 
     /// Construct a handle from a `Computation`'s internal flag.
-    pub fn from_computation(comp: &Computation) -> Self {
+    pub fn from_computation<F: Field + Copy + Send + Sync>(comp: &Computation<F>) -> Self {
         Self {
             flag: Arc::clone(&comp.cancel),
         }
@@ -850,35 +882,36 @@ impl CancelHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::Field;
     use crate::ordering::MonoOrder;
+    use ark_bls12_381::Fr;
+    use ark_ff::One;
 
-    fn mk_ring(nvars: u32, p: u32) -> Arc<Ring> {
-        Arc::new(Ring::new(nvars, MonoOrder::DegRevLex, Field::new(p).unwrap()).unwrap())
+    fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
+        Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
     }
 
-    fn mono(r: &Ring, e: &[u32]) -> Monomial {
+    fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
         Monomial::from_exponents(r, e).unwrap()
     }
 
     #[test]
     fn empty_input_gives_empty_gb_parallel() {
-        let r = mk_ring(3, 32003);
+        let r = mk_ring(3);
         let gb = compute_gb_parallel(Arc::clone(&r), vec![], 2).unwrap();
         assert!(gb.is_empty());
     }
 
     #[test]
     fn zero_input_gives_empty_gb_parallel() {
-        let r = mk_ring(3, 32003);
+        let r = mk_ring(3);
         let gb = compute_gb_parallel(Arc::clone(&r), vec![Poly::zero()], 2).unwrap();
         assert!(gb.is_empty());
     }
 
     #[test]
     fn constant_input_gives_unit_gb_parallel() {
-        let r = mk_ring(3, 32003);
-        let one = Poly::monomial(&r, 1, Monomial::one(&r));
+        let r = mk_ring(3);
+        let one = Poly::monomial(&r, Fr::one(), Monomial::one(&r));
         let gb = compute_gb_parallel(Arc::clone(&r), vec![one.clone()], 2).unwrap();
         assert_eq!(gb.len(), 1);
         assert_eq!(gb[0], one);
@@ -886,48 +919,48 @@ mod tests {
 
     #[test]
     fn cyclic3_parallel_matches_singular() {
-        let r = mk_ring(3, 32003);
+        let r = mk_ring(3);
         let f1 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 0, 0])),
-                (1, mono(&r, &[0, 1, 0])),
-                (1, mono(&r, &[0, 0, 1])),
+                (Fr::one(), mono(&r, &[1, 0, 0])),
+                (Fr::one(), mono(&r, &[0, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 0, 1])),
             ],
         );
         let f2 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 1, 0])),
-                (1, mono(&r, &[0, 1, 1])),
-                (1, mono(&r, &[1, 0, 1])),
+                (Fr::one(), mono(&r, &[1, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 1, 1])),
+                (Fr::one(), mono(&r, &[1, 0, 1])),
             ],
         );
         let f3 = Poly::from_terms(
             &r,
-            vec![(1, mono(&r, &[1, 1, 1])), (32002, mono(&r, &[0, 0, 0]))],
+            vec![(Fr::one(), mono(&r, &[1, 1, 1])), (-Fr::one(), mono(&r, &[0, 0, 0]))],
         );
         let gb = compute_gb_parallel(Arc::clone(&r), vec![f1, f2, f3], 4).unwrap();
         let expected = vec![
             Poly::from_terms(
                 &r,
                 vec![
-                    (1, mono(&r, &[1, 0, 0])),
-                    (1, mono(&r, &[0, 1, 0])),
-                    (1, mono(&r, &[0, 0, 1])),
+                    (Fr::one(), mono(&r, &[1, 0, 0])),
+                    (Fr::one(), mono(&r, &[0, 1, 0])),
+                    (Fr::one(), mono(&r, &[0, 0, 1])),
                 ],
             ),
             Poly::from_terms(
                 &r,
                 vec![
-                    (1, mono(&r, &[0, 2, 0])),
-                    (1, mono(&r, &[0, 1, 1])),
-                    (1, mono(&r, &[0, 0, 2])),
+                    (Fr::one(), mono(&r, &[0, 2, 0])),
+                    (Fr::one(), mono(&r, &[0, 1, 1])),
+                    (Fr::one(), mono(&r, &[0, 0, 2])),
                 ],
             ),
             Poly::from_terms(
                 &r,
-                vec![(1, mono(&r, &[0, 0, 3])), (32002, mono(&r, &[0, 0, 0]))],
+                vec![(Fr::one(), mono(&r, &[0, 0, 3])), (-Fr::one(), mono(&r, &[0, 0, 0]))],
             ),
         ];
         assert_eq!(gb, expected);
@@ -938,7 +971,7 @@ mod tests {
         // Build a longer computation and cancel it from another
         // thread. Use a reasonably large but not huge cyclic-4 case;
         // a test timeout of a few seconds is plenty.
-        let r = mk_ring(4, 32003);
+        let r = mk_ring(4);
         // Simple ideal to give workers something to chew on. We
         // cancel essentially immediately, so the result we care
         // about is that we get `Err(Cancelled)` rather than a
@@ -946,35 +979,35 @@ mod tests {
         let f1 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 0, 0, 0])),
-                (1, mono(&r, &[0, 1, 0, 0])),
-                (1, mono(&r, &[0, 0, 1, 0])),
-                (1, mono(&r, &[0, 0, 0, 1])),
+                (Fr::one(), mono(&r, &[1, 0, 0, 0])),
+                (Fr::one(), mono(&r, &[0, 1, 0, 0])),
+                (Fr::one(), mono(&r, &[0, 0, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 0, 0, 1])),
             ],
         );
         let f2 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 1, 0, 0])),
-                (1, mono(&r, &[0, 1, 1, 0])),
-                (1, mono(&r, &[0, 0, 1, 1])),
-                (1, mono(&r, &[1, 0, 0, 1])),
+                (Fr::one(), mono(&r, &[1, 1, 0, 0])),
+                (Fr::one(), mono(&r, &[0, 1, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 0, 1, 1])),
+                (Fr::one(), mono(&r, &[1, 0, 0, 1])),
             ],
         );
         let f3 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 1, 1, 0])),
-                (1, mono(&r, &[0, 1, 1, 1])),
-                (1, mono(&r, &[1, 0, 1, 1])),
-                (1, mono(&r, &[1, 1, 0, 1])),
+                (Fr::one(), mono(&r, &[1, 1, 1, 0])),
+                (Fr::one(), mono(&r, &[0, 1, 1, 1])),
+                (Fr::one(), mono(&r, &[1, 0, 1, 1])),
+                (Fr::one(), mono(&r, &[1, 1, 0, 1])),
             ],
         );
         let f4 = Poly::from_terms(
             &r,
             vec![
-                (1, mono(&r, &[1, 1, 1, 1])),
-                (32002, mono(&r, &[0, 0, 0, 0])),
+                (Fr::one(), mono(&r, &[1, 1, 1, 1])),
+                (-Fr::one(), mono(&r, &[0, 0, 0, 0])),
             ],
         );
 
