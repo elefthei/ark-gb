@@ -1,11 +1,13 @@
-//! Fixture tests: `ark_gb::compute_gb` vs pre-computed Singular
-//! reference output.
+//! Fixture tests: `ark_gb::compute_gb` validated via Buchberger's
+//! criterion (`ark_gb::validate::is_groebner_basis`).
 //!
-//! TODO: needs regeneration over Fr via Sage/Singular. The fixture
-//! files in `tests/fixtures/*.gb.txt` were generated for Z/32003 and
-//! are not directly usable now that ark-gb is generic over
-//! `ark_ff::Field`. All tests in this file are `#[ignore]`d until
-//! the fixtures are regenerated against the BLS12-381 scalar field.
+//! The upstream rustgb fixtures (`tests/fixtures/*.gb.txt`) were
+//! generated for Z/32003 and are no longer applicable now that ark-gb
+//! is generic over `ark_ff::Field`. Rather than regenerate fixtures
+//! over `Fr` (which requires Sage/Singular), each test asserts
+//! Buchberger's iff property directly: `G` is a GB of `⟨I⟩` iff every
+//! `f ∈ I` and every S-poly of pairs in `G²` reduces to `0` mod `G`.
+//! The `LineParser` is retained for the parser-roundtrip smoke test.
 
 use std::sync::Arc;
 
@@ -190,28 +192,6 @@ impl<'a> LineParser<'a> {
     }
 }
 
-fn parse_fixture(text: &str, ring: &Ring<Fr>, var_names: &[&str]) -> Vec<Poly<Fr>> {
-    text.lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(LineParser::new(trimmed, ring, var_names).parse())
-            }
-        })
-        .collect()
-}
-
-fn sort_gb_ascending(mut gb: Vec<Poly<Fr>>, ring: &Ring<Fr>) -> Vec<Poly<Fr>> {
-    gb.sort_by(|a, b| {
-        let la = a.leading().expect("nonzero").1;
-        let lb = b.leading().expect("nonzero").1;
-        la.cmp(lb, ring)
-    });
-    gb
-}
-
 fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
     Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
 }
@@ -220,8 +200,26 @@ fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
     Monomial::from_exponents(r, e).unwrap()
 }
 
+/// Run `compute_gb` and validate the output via Buchberger's criterion.
+/// Panics on validation failure with the first witness of incorrectness.
+fn validate_gb(
+    name: &str,
+    ring: &Arc<Ring<Fr>>,
+    input: Vec<Poly<Fr>>,
+) -> Vec<Poly<Fr>> {
+    let gb = compute_gb(Arc::clone(ring), input.clone());
+    assert!(
+        !gb.is_empty(),
+        "{name}: GB is unexpectedly empty (input had {} polys)",
+        input.len()
+    );
+    if let Err(err) = ark_gb::validate::is_groebner_basis(ring, &input, &gb) {
+        panic!("{name}: compute_gb output failed Buchberger's criterion: {err:?}");
+    }
+    gb
+}
+
 #[test]
-#[ignore = "needs regeneration over Fr via Sage/Singular"]
 fn cyclic3_matches_singular_fixture() {
     let r = mk_ring(3);
     let f1 = Poly::from_terms(
@@ -245,21 +243,10 @@ fn cyclic3_matches_singular_fixture() {
         vec![(Fr::one(), mono(&r, &[1, 1, 1])), (-Fr::one(), mono(&r, &[0, 0, 0]))],
     );
 
-    let got = compute_gb(Arc::clone(&r), vec![f1, f2, f3]);
-    let text = include_str!("fixtures/cyclic-3.gb.txt");
-    let expected = sort_gb_ascending(parse_fixture(text, &r, &["x", "y", "z"]), &r);
-    assert_eq!(
-        got.len(),
-        expected.len(),
-        "cyclic-3 basis size: got {}, expected {}",
-        got.len(),
-        expected.len()
-    );
-    assert_eq!(got, expected, "cyclic-3 fixture mismatch");
+    let _gb = validate_gb("cyclic-3", &r, vec![f1, f2, f3]);
 }
 
 #[test]
-#[ignore = "needs regeneration over Fr via Sage/Singular"]
 fn cyclic4_matches_singular_fixture() {
     let r = mk_ring(4);
     let m = |e: &[u32]| mono(&r, e);
@@ -297,21 +284,10 @@ fn cyclic4_matches_singular_fixture() {
     // abcd - 1
     let f4 = Poly::from_terms(&r, vec![(Fr::one(), m(&[1, 1, 1, 1])), (-Fr::one(), m(&[0, 0, 0, 0]))]);
 
-    let got = compute_gb(Arc::clone(&r), vec![f1, f2, f3, f4]);
-    let text = include_str!("fixtures/cyclic-4.gb.txt");
-    let expected = sort_gb_ascending(parse_fixture(text, &r, &["a", "b", "c", "d"]), &r);
-    assert_eq!(
-        got.len(),
-        expected.len(),
-        "cyclic-4 basis size: got {}, expected {}",
-        got.len(),
-        expected.len()
-    );
-    assert_eq!(got, expected, "cyclic-4 fixture mismatch");
+    let _gb = validate_gb("cyclic-4", &r, vec![f1, f2, f3, f4]);
 }
 
 #[test]
-#[ignore = "needs regeneration over Fr via Sage/Singular"]
 fn cyclic5_matches_singular_fixture() {
     let r = mk_ring(5);
     let m = |e: &[u32]| mono(&r, e);
@@ -366,21 +342,10 @@ fn cyclic5_matches_singular_fixture() {
         vec![(Fr::one(), m(&[1, 1, 1, 1, 1])), (-Fr::one(), m(&[0, 0, 0, 0, 0]))],
     );
 
-    let got = compute_gb(Arc::clone(&r), vec![f1, f2, f3, f4, f5]);
-    let text = include_str!("fixtures/cyclic-5.gb.txt");
-    let expected = sort_gb_ascending(parse_fixture(text, &r, &["a", "b", "c", "d", "e"]), &r);
-    assert_eq!(
-        got.len(),
-        expected.len(),
-        "cyclic-5 basis size: got {}, expected {}",
-        got.len(),
-        expected.len()
-    );
-    assert_eq!(got, expected, "cyclic-5 fixture mismatch");
+    let _gb = validate_gb("cyclic-5", &r, vec![f1, f2, f3, f4, f5]);
 }
 
 #[test]
-#[ignore = "needs regeneration over Fr via Sage/Singular"]
 fn katsura3_matches_singular_fixture() {
     // 4-variable system: u0, u1, u2, u3.
     let r = mk_ring(4);
@@ -429,21 +394,10 @@ fn katsura3_matches_singular_fixture() {
         ],
     );
 
-    let got = compute_gb(Arc::clone(&r), vec![f1, f2, f3, f4]);
-    let text = include_str!("fixtures/katsura-3.gb.txt");
-    let expected = sort_gb_ascending(parse_fixture(text, &r, &["u0", "u1", "u2", "u3"]), &r);
-    assert_eq!(
-        got.len(),
-        expected.len(),
-        "katsura-3 basis size: got {}, expected {}",
-        got.len(),
-        expected.len()
-    );
-    assert_eq!(got, expected, "katsura-3 fixture mismatch");
+    let _gb = validate_gb("katsura-3", &r, vec![f1, f2, f3, f4]);
 }
 
 #[test]
-#[ignore = "needs regeneration over Fr via Sage/Singular"]
 fn parser_round_trips_monomial_forms() {
     // Smoke-test for the parser: Singular emits both `x2` and `x^2`
     // depending on the variable-name format. Both must parse to the
