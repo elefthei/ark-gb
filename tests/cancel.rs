@@ -17,18 +17,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ark_gb::field::Field;
+use ark_bls12_381::Fr;
+use ark_ff::One;
 use ark_gb::monomial::Monomial;
 use ark_gb::ordering::MonoOrder;
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 use ark_gb::{CancelHandle, Cancelled, Computation, compute_gb_parallel};
 
-fn mk_ring(nvars: u32, p: u32) -> Arc<Ring> {
-    Arc::new(Ring::new(nvars, MonoOrder::DegRevLex, Field::new(p).unwrap()).unwrap())
+fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
+    Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
 }
 
-fn mono(r: &Ring, e: &[u32]) -> Monomial {
+fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
     Monomial::from_exponents(r, e).unwrap()
 }
 
@@ -57,8 +58,8 @@ fn compute_gb_parallel_with_pre_cancelled_handle() {
     // pre-cancel contract we rely on the fact that the cancel poll
     // happens as the very first action in the seed loop — which we
     // can test via the `Computation` API directly.
-    let r = mk_ring(3, 32003);
-    let comp = Computation::new(Arc::clone(&r));
+    let r = mk_ring(3);
+    let comp = Computation::<Fr>::new(Arc::clone(&r));
     let handle = CancelHandle::from_computation(&comp);
     handle.cancel();
     assert!(comp.is_cancelled());
@@ -67,8 +68,8 @@ fn compute_gb_parallel_with_pre_cancelled_handle() {
 
 #[test]
 fn cancel_handle_cancels_computation() {
-    let r = mk_ring(3, 32003);
-    let comp = Computation::new(Arc::clone(&r));
+    let r = mk_ring(3);
+    let comp = Computation::<Fr>::new(Arc::clone(&r));
     let handle = CancelHandle::from_computation(&comp);
     assert!(!comp.is_cancelled());
     handle.cancel();
@@ -83,27 +84,27 @@ fn cancel_handle_cancels_computation() {
 /// deadlock under cancel" property.
 #[test]
 fn parallel_computation_terminates_under_cancel_poke() {
-    let r = mk_ring(3, 32003);
+    let r = mk_ring(3);
     // A non-trivial ideal.
     let f1 = Poly::from_terms(
         &r,
         vec![
-            (1, mono(&r, &[1, 0, 0])),
-            (1, mono(&r, &[0, 1, 0])),
-            (1, mono(&r, &[0, 0, 1])),
+            (Fr::one(), mono(&r, &[1, 0, 0])),
+            (Fr::one(), mono(&r, &[0, 1, 0])),
+            (Fr::one(), mono(&r, &[0, 0, 1])),
         ],
     );
     let f2 = Poly::from_terms(
         &r,
         vec![
-            (1, mono(&r, &[1, 1, 0])),
-            (1, mono(&r, &[0, 1, 1])),
-            (1, mono(&r, &[1, 0, 1])),
+            (Fr::one(), mono(&r, &[1, 1, 0])),
+            (Fr::one(), mono(&r, &[0, 1, 1])),
+            (Fr::one(), mono(&r, &[1, 0, 1])),
         ],
     );
     let f3 = Poly::from_terms(
         &r,
-        vec![(1, mono(&r, &[1, 1, 1])), (32002, mono(&r, &[0, 0, 0]))],
+        vec![(Fr::one(), mono(&r, &[1, 1, 1])), (-Fr::one(), mono(&r, &[0, 0, 0]))],
     );
 
     let cancel_triggered = Arc::new(AtomicBool::new(false));

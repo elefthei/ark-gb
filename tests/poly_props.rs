@@ -4,31 +4,35 @@
 //! tests (see `~/flint/src/nmod_mpoly/test/`), translated into
 //! Rust `proptest` style.
 
+use ark_bls12_381::Fr;
+use ark_ff::{One, PrimeField, Zero};
+use ark_gb::{MonoOrder, Monomial, Poly, Ring};
 use proptest::prelude::*;
-use ark_gb::{Coeff, Field, MonoOrder, Monomial, Poly, Ring};
 
-/// A small prime keeps the tests fast while catching arithmetic bugs.
-const DEFAULT_PRIME: u32 = 32003;
+fn arb_fr() -> impl Strategy<Value = Fr> {
+    any::<[u8; 32]>().prop_map(|bytes| Fr::from_le_bytes_mod_order(&bytes))
+}
 
-fn ring_strategy(max_nvars: u32) -> impl Strategy<Value = Ring> {
-    (1u32..=max_nvars).prop_map(|n| {
-        Ring::new(n, MonoOrder::DegRevLex, Field::new(DEFAULT_PRIME).unwrap()).unwrap()
-    })
+fn arb_nonzero_fr() -> impl Strategy<Value = Fr> {
+    arb_fr().prop_map(|f| if f.is_zero() { Fr::one() } else { f })
+}
+
+fn ring_strategy(max_nvars: u32) -> impl Strategy<Value = Ring<Fr>> {
+    (1u32..=max_nvars).prop_map(|n| Ring::<Fr>::new(n, MonoOrder::DegRevLex).unwrap())
 }
 
 fn poly_strategy(
-    ring: Ring,
+    ring: Ring<Fr>,
     max_terms: usize,
     max_exp: u32,
-) -> impl Strategy<Value = (Ring, Poly)> {
+) -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>)> {
     let n = ring.nvars() as usize;
-    let p = ring.field().p();
     prop::collection::vec(
-        (1u32..p, prop::collection::vec(0u32..max_exp, n)),
+        (arb_nonzero_fr(), prop::collection::vec(0u32..max_exp, n)),
         0..=max_terms,
     )
     .prop_map(move |terms| {
-        let converted: Vec<(Coeff, Monomial)> = terms
+        let converted: Vec<(Fr, Monomial)> = terms
             .into_iter()
             .map(|(c, e)| (c, Monomial::from_exponents(&ring, &e).unwrap()))
             .collect();
@@ -40,7 +44,7 @@ fn poly_strategy(
 /// Ring + three polys. Small caps so products stay within the 8-bit
 /// exponent budget (we sum exponents of up to two operands, so
 /// max_exp * 2 ≤ 255 → max_exp ≤ 127).
-fn ring_poly3_strategy() -> impl Strategy<Value = (Ring, Poly, Poly, Poly)> {
+fn ring_poly3_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>, Poly<Fr>)> {
     ring_strategy(5).prop_flat_map(|r| {
         (
             Just(r.clone()),
@@ -52,7 +56,7 @@ fn ring_poly3_strategy() -> impl Strategy<Value = (Ring, Poly, Poly, Poly)> {
     })
 }
 
-fn ring_poly2_strategy() -> impl Strategy<Value = (Ring, Poly, Poly)> {
+fn ring_poly2_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>)> {
     ring_strategy(5).prop_flat_map(|r| {
         (
             Just(r.clone()),
@@ -63,19 +67,19 @@ fn ring_poly2_strategy() -> impl Strategy<Value = (Ring, Poly, Poly)> {
     })
 }
 
-fn ring_poly1_strategy() -> impl Strategy<Value = (Ring, Poly)> {
+fn ring_poly1_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>)> {
     ring_strategy(5).prop_flat_map(|r| poly_strategy(r, 10, 15))
 }
 
-fn ring_poly_term_strategy() -> impl Strategy<Value = (Ring, Poly, Poly, Coeff, Monomial)> {
+fn ring_poly_term_strategy()
+-> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>, Fr, Monomial)> {
     ring_strategy(4).prop_flat_map(|r| {
         let n = r.nvars() as usize;
-        let p = r.field().p();
         (
             Just(r.clone()),
             poly_strategy(r.clone(), 6, 8),
             poly_strategy(r.clone(), 6, 8),
-            1u32..p,
+            arb_nonzero_fr(),
             prop::collection::vec(0u32..20, n),
         )
             .prop_map(move |(r, (_, p1), (_, p2), c, exps)| {
@@ -130,7 +134,7 @@ proptest! {
     #[test]
     fn mul_one_is_identity((r, f) in ring_poly1_strategy()) {
         let one_mono = Monomial::one(&r);
-        let one = Poly::monomial(&r, 1, one_mono);
+        let one = Poly::monomial(&r, Fr::one(), one_mono);
         prop_assert_eq!(f.mul(&one, &r), f.clone());
     }
 
@@ -178,11 +182,11 @@ proptest! {
         let (fc, fm) = f.leading().unwrap();
         let (gc, gm) = g.leading().unwrap();
         let expected_m = fm.mul(gm, &r);
-        let expected_c = r.field().mul(fc, gc);
+        let expected_c = fc * gc;
         if prod.is_zero() {
             // Only possible if expected_c == 0, which needs a zero
-            // divisor — impossible in Z/p.
-            prop_assert!(expected_c == 0);
+            // divisor — impossible in a field.
+            prop_assert!(expected_c.is_zero());
         } else {
             let (pc, pm) = prod.leading().unwrap();
             prop_assert_eq!(pc, expected_c);
@@ -209,38 +213,41 @@ proptest! {
         if f.is_zero() { return Ok(()); }
         let once = f.monic(&r).unwrap();
         let twice = once.monic(&r).unwrap();
-        prop_assert_eq!(once.lm_coeff(), 1);
+        prop_assert_eq!(once.lm_coeff(), Fr::one());
         prop_assert_eq!(once, twice);
     }
 }
 
 // --- Fixed-input fixtures drawn from the Groebner basis literature --
 
-/// The ideal of the cyclic-3 system over Z/32003.
+/// The ideal of the cyclic-3 system over Fr.
 #[test]
 fn cyclic3_polynomials_are_canonical() {
-    let r = Ring::new(3, MonoOrder::DegRevLex, Field::new(32003).unwrap()).unwrap();
+    let r = Ring::<Fr>::new(3, MonoOrder::DegRevLex).unwrap();
     let mono = |e: &[u32]| Monomial::from_exponents(&r, e).unwrap();
     // f1 = x + y + z
     let f1 = Poly::from_terms(
         &r,
         vec![
-            (1, mono(&[1, 0, 0])),
-            (1, mono(&[0, 1, 0])),
-            (1, mono(&[0, 0, 1])),
+            (Fr::one(), mono(&[1, 0, 0])),
+            (Fr::one(), mono(&[0, 1, 0])),
+            (Fr::one(), mono(&[0, 0, 1])),
         ],
     );
     // f2 = x*y + y*z + x*z
     let f2 = Poly::from_terms(
         &r,
         vec![
-            (1, mono(&[1, 1, 0])),
-            (1, mono(&[0, 1, 1])),
-            (1, mono(&[1, 0, 1])),
+            (Fr::one(), mono(&[1, 1, 0])),
+            (Fr::one(), mono(&[0, 1, 1])),
+            (Fr::one(), mono(&[1, 0, 1])),
         ],
     );
     // f3 = x*y*z - 1
-    let f3 = Poly::from_terms(&r, vec![(1, mono(&[1, 1, 1])), (32002, mono(&[0, 0, 0]))]);
+    let f3 = Poly::from_terms(
+        &r,
+        vec![(Fr::one(), mono(&[1, 1, 1])), (-Fr::one(), mono(&[0, 0, 0]))],
+    );
     f1.assert_canonical(&r);
     f2.assert_canonical(&r);
     f3.assert_canonical(&r);
@@ -249,36 +256,38 @@ fn cyclic3_polynomials_are_canonical() {
     assert_eq!(f1.lm_deg(), 1);
 }
 
-/// A small ideal over several small moduli. Just builds and canonicalises.
+/// A small ideal: just builds and canonicalises.
 #[test]
-fn small_moduli_fixture() {
-    for &p in &[2u32, 3, 5, 32003] {
-        let r = Ring::new(1, MonoOrder::DegRevLex, Field::new(p).unwrap()).unwrap();
-        let one_mono = Monomial::one(&r);
-        let x = Monomial::from_exponents(&r, &[1]).unwrap();
-        // f = x - 1
-        let f = Poly::from_terms(&r, vec![(1, x), (p - 1, one_mono)]);
-        f.assert_canonical(&r);
-        assert_eq!(f.len(), 2);
-    }
+fn small_ideal_fixture() {
+    let r = Ring::<Fr>::new(1, MonoOrder::DegRevLex).unwrap();
+    let one_mono = Monomial::one(&r);
+    let x = Monomial::from_exponents(&r, &[1]).unwrap();
+    // f = x - 1
+    let f = Poly::from_terms(&r, vec![(Fr::one(), x), (-Fr::one(), one_mono)]);
+    f.assert_canonical(&r);
+    assert_eq!(f.len(), 2);
 }
 
 #[test]
 fn single_term_edge_cases() {
-    let r = Ring::new(3, MonoOrder::DegRevLex, Field::new(7).unwrap()).unwrap();
+    let r = Ring::<Fr>::new(3, MonoOrder::DegRevLex).unwrap();
     // The multiplicative identity polynomial.
-    let one_poly = Poly::monomial(&r, 1, Monomial::one(&r));
+    let one_poly = Poly::monomial(&r, Fr::one(), Monomial::one(&r));
     one_poly.assert_canonical(&r);
     assert_eq!(one_poly.len(), 1);
     assert_eq!(one_poly.lm_deg(), 0);
     // The zero polynomial.
-    let z = Poly::zero();
+    let z = Poly::<Fr>::zero();
     z.assert_canonical(&r);
     assert!(z.is_zero());
     // Single variable.
-    let x = Poly::monomial(&r, 3, Monomial::from_exponents(&r, &[1, 0, 0]).unwrap());
+    let x = Poly::monomial(
+        &r,
+        Fr::from(3u64),
+        Monomial::from_exponents(&r, &[1, 0, 0]).unwrap(),
+    );
     x.assert_canonical(&r);
-    assert_eq!(x.lm_coeff(), 3);
+    assert_eq!(x.lm_coeff(), Fr::from(3u64));
 }
 
 #[test]
@@ -293,7 +302,7 @@ fn drop_100k_term_poly_does_not_overflow_stack() {
     // test run. Scaling to 100 K terms costs ~10 ms on the Vec
     // backend and ~40 ms on the linked-list backend — cheap enough
     // to keep in the default suite.
-    let r = Ring::new(4, MonoOrder::DegRevLex, Field::new(32003).unwrap()).unwrap();
+    let r = Ring::<Fr>::new(4, MonoOrder::DegRevLex).unwrap();
     let n: usize = 100_000;
 
     // Generate N distinct monomials by sweeping exponents in base-64
@@ -313,7 +322,7 @@ fn drop_100k_term_poly_does_not_overflow_stack() {
         }
     }
     distinct.sort_by(|x, y| y.cmp(x, &r));
-    let terms: Vec<(Coeff, Monomial)> = distinct.into_iter().map(|m| (1u32, m)).collect();
+    let terms: Vec<(Fr, Monomial)> = distinct.into_iter().map(|m| (Fr::one(), m)).collect();
     let p = Poly::from_descending_terms_unchecked(&r, terms);
     assert_eq!(p.len(), n);
     // Dropping the huge poly at scope exit must not overflow the

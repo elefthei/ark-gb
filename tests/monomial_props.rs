@@ -1,23 +1,21 @@
 //! Property-based tests for monomials.
 
+use ark_bls12_381::Fr;
+use ark_gb::{MonoOrder, Monomial, Ring};
 use proptest::prelude::*;
-use ark_gb::{Field, MonoOrder, Monomial, Ring};
 use std::cmp::Ordering;
 
 /// Generate a random ring with `nvars ∈ [1, 25]`, fixed prime.
 ///
 /// 25 is the staging workload size; it also leaves room (we permit up
 /// to 31) for the packing overflow cases.
-fn ring_strategy() -> impl Strategy<Value = Ring> {
-    (1u32..=25).prop_map(|nvars| {
-        let f = Field::new(32003).unwrap();
-        Ring::new(nvars, MonoOrder::DegRevLex, f).unwrap()
-    })
+fn ring_strategy() -> impl Strategy<Value = Ring<Fr>> {
+    (1u32..=25).prop_map(|nvars| Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
 }
 
 /// Generate a monomial in the given ring with per-variable exponents
 /// small enough that products stay within the 8-bit limit.
-fn mono_strategy(ring: Ring) -> impl Strategy<Value = (Ring, Monomial)> {
+fn mono_strategy(ring: Ring<Fr>) -> impl Strategy<Value = (Ring<Fr>, Monomial)> {
     let n = ring.nvars() as usize;
     // Cap at 30 so sums of up to ~8 monomials stay within 255.
     prop::collection::vec(0u32..30, n).prop_map(move |exps| {
@@ -27,7 +25,7 @@ fn mono_strategy(ring: Ring) -> impl Strategy<Value = (Ring, Monomial)> {
 }
 
 /// Generate a ring and three monomials sharing it.
-fn ring_mono3_strategy() -> impl Strategy<Value = (Ring, Monomial, Monomial, Monomial)> {
+fn ring_mono3_strategy() -> impl Strategy<Value = (Ring<Fr>, Monomial, Monomial, Monomial)> {
     ring_strategy().prop_flat_map(|r| {
         let n = r.nvars() as usize;
         (
@@ -45,7 +43,7 @@ fn ring_mono3_strategy() -> impl Strategy<Value = (Ring, Monomial, Monomial, Mon
     })
 }
 
-fn ring_mono2_strategy() -> impl Strategy<Value = (Ring, Monomial, Monomial)> {
+fn ring_mono2_strategy() -> impl Strategy<Value = (Ring<Fr>, Monomial, Monomial)> {
     ring_strategy().prop_flat_map(|r| {
         let n = r.nvars() as usize;
         (

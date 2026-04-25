@@ -16,21 +16,21 @@
 //! (sev has 64 bits) the sev bloom filter is exact, so the two must
 //! agree term-for-term.
 
-use proptest::prelude::*;
+use ark_bls12_381::Fr;
+use ark_ff::One;
 use ark_gb::gm;
-use ark_gb::{Field, LSet, MonoOrder, Monomial, Poly, Ring, SBasis};
+use ark_gb::{LSet, MonoOrder, Monomial, Poly, Ring, SBasis};
+use proptest::prelude::*;
 
-const P: u32 = 32003;
 const MAX_VARS: u32 = 4;
 const MAX_EXP: u32 = 3;
 const MAX_BASIS: usize = 8;
 
-fn ring_strategy() -> impl Strategy<Value = Ring> {
-    (2u32..=MAX_VARS)
-        .prop_map(|n| Ring::new(n, MonoOrder::DegRevLex, Field::new(P).unwrap()).unwrap())
+fn ring_strategy() -> impl Strategy<Value = Ring<Fr>> {
+    (2u32..=MAX_VARS).prop_map(|n| Ring::<Fr>::new(n, MonoOrder::DegRevLex).unwrap())
 }
 
-fn lm_strategy(ring: Ring) -> impl Strategy<Value = Monomial> {
+fn lm_strategy(ring: Ring<Fr>) -> impl Strategy<Value = Monomial> {
     let n = ring.nvars() as usize;
     prop::collection::vec(0u32..=MAX_EXP, n).prop_filter_map("need nonzero", move |e| {
         if e.iter().all(|&x| x == 0) {
@@ -40,7 +40,7 @@ fn lm_strategy(ring: Ring) -> impl Strategy<Value = Monomial> {
     })
 }
 
-fn scenario_strategy() -> impl Strategy<Value = (Ring, Vec<Monomial>, Monomial)> {
+fn scenario_strategy() -> impl Strategy<Value = (Ring<Fr>, Vec<Monomial>, Monomial)> {
     ring_strategy().prop_flat_map(|r| {
         let r1 = r.clone();
         let r2 = r.clone();
@@ -54,7 +54,7 @@ fn scenario_strategy() -> impl Strategy<Value = (Ring, Vec<Monomial>, Monomial)>
 /// Returns `(i, j)` index pairs only; the LCMs are deterministic
 /// from the inputs so we don't need to check them separately.
 fn slow_enterpairs(
-    ring: &Ring,
+    ring: &Ring<Fr>,
     lms: &[Monomial],
     redundant: &[bool],
     h_lm: &Monomial,
@@ -104,7 +104,7 @@ fn slow_enterpairs(
         .collect()
 }
 
-fn exp_coprime(ring: &Ring, a: &Monomial, b: &Monomial) -> bool {
+fn exp_coprime(ring: &Ring<Fr>, a: &Monomial, b: &Monomial) -> bool {
     for i in 0..ring.nvars() {
         let ea = a.exponent(ring, i).unwrap();
         let eb = b.exponent(ring, i).unwrap();
@@ -123,11 +123,11 @@ proptest! {
         (r, basis_lms, h_lm) in scenario_strategy(),
     ) {
         // Build the SBasis with single-term polys.
-        let mut s = SBasis::new();
+        let mut s = SBasis::<Fr>::new();
         for m in &basis_lms {
-            s.insert(&r, Poly::monomial(&r, 1, m.clone()));
+            s.insert(&r, Poly::monomial(&r, Fr::one(), m.clone()));
         }
-        let h = Poly::monomial(&r, 1, h_lm.clone());
+        let h = Poly::monomial(&r, Fr::one(), h_lm.clone());
         let h_idx = s.insert(&r, h.clone()) as u32;
 
         // Snapshot post-redundancy state of the pre-h basis. The
