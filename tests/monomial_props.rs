@@ -1,7 +1,7 @@
 //! Property-based tests for monomials.
 
 use ark_bls12_381::Fr;
-use ark_gb::{DegRevLex, MonoTerm, Ring};
+use ark_gb::{GrevLexTerm, MonoTerm, Ring};
 use proptest::prelude::*;
 use std::cmp::Ordering;
 
@@ -9,15 +9,13 @@ use std::cmp::Ordering;
 ///
 /// 25 is the staging workload size; it also leaves room (we permit up
 /// to 31) for the packing overflow cases.
-fn ring_strategy() -> impl Strategy<Value = Ring<Fr, DegRevLex>> {
-    (1u32..=25).prop_map(|nvars| Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap())
+fn ring_strategy() -> impl Strategy<Value = Ring<Fr>> {
+    (1u32..=25).prop_map(|nvars| Ring::<Fr>::new(nvars).unwrap())
 }
 
 /// Generate a monomial in the given ring with per-variable exponents
 /// small enough that products stay within the 8-bit limit.
-fn mono_strategy(
-    ring: Ring<Fr, DegRevLex>,
-) -> impl Strategy<Value = (Ring<Fr, DegRevLex>, MonoTerm)> {
+fn mono_strategy(ring: Ring<Fr>) -> impl Strategy<Value = (Ring<Fr>, MonoTerm)> {
     let n = ring.nvars() as usize;
     // Cap at 30 so sums of up to ~8 monomials stay within 255.
     prop::collection::vec(0u32..30, n).prop_map(move |exps| {
@@ -27,8 +25,7 @@ fn mono_strategy(
 }
 
 /// Generate a ring and three monomials sharing it.
-fn ring_mono3_strategy()
--> impl Strategy<Value = (Ring<Fr, DegRevLex>, MonoTerm, MonoTerm, MonoTerm)> {
+fn ring_mono3_strategy() -> impl Strategy<Value = (Ring<Fr>, MonoTerm, MonoTerm, MonoTerm)> {
     ring_strategy().prop_flat_map(|r| {
         let n = r.nvars() as usize;
         (
@@ -46,7 +43,7 @@ fn ring_mono3_strategy()
     })
 }
 
-fn ring_mono2_strategy() -> impl Strategy<Value = (Ring<Fr, DegRevLex>, MonoTerm, MonoTerm)> {
+fn ring_mono2_strategy() -> impl Strategy<Value = (Ring<Fr>, MonoTerm, MonoTerm)> {
     ring_strategy().prop_flat_map(|r| {
         let n = r.nvars() as usize;
         (
@@ -134,9 +131,11 @@ proptest! {
     }
 
     #[test]
-    fn cmp_is_total((r, a, b) in ring_mono2_strategy()) {
-        let ord_ab = a.cmp(&b, &r);
-        let ord_ba = b.cmp(&a, &r);
+    fn cmp_is_total((_r, a, b) in ring_mono2_strategy()) {
+        let ga = GrevLexTerm::from(a);
+        let gb = GrevLexTerm::from(b);
+        let ord_ab = ga.cmp(&gb);
+        let ord_ba = gb.cmp(&ga);
         match (ord_ab, ord_ba) {
             (Ordering::Less, Ordering::Greater)
             | (Ordering::Greater, Ordering::Less)
@@ -148,7 +147,9 @@ proptest! {
     #[test]
     fn cmp_equal_iff_same_exponents((r, a, b) in ring_mono2_strategy()) {
         let equal_exps = a.exponents(&r) == b.exponents(&r);
-        prop_assert_eq!(a.cmp(&b, &r) == Ordering::Equal, equal_exps);
+        let ga = GrevLexTerm::from(a);
+        let gb = GrevLexTerm::from(b);
+        prop_assert_eq!(ga.cmp(&gb) == Ordering::Equal, equal_exps);
     }
 
     #[test]

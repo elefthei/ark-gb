@@ -19,17 +19,17 @@ use std::time::{Duration, Instant};
 
 use ark_bls12_381::Fr;
 use ark_ff::One;
-use ark_gb::monomial::MonoTerm;
+use ark_gb::monomial::{GrevLexTerm, MonoTerm};
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
-use ark_gb::{CancelHandle, Cancelled, Computation, DegRevLex, compute_gb_parallel};
+use ark_gb::{CancelHandle, Cancelled, Computation, compute_gb_parallel};
 
-fn mk_ring(nvars: u32) -> Arc<Ring<Fr, DegRevLex>> {
-    Arc::new(Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap())
+fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
+    Arc::new(Ring::<Fr>::new(nvars).unwrap())
 }
 
-fn mono(r: &Ring<Fr, DegRevLex>, e: &[u32]) -> MonoTerm {
-    MonoTerm::from_exponents(r, e).unwrap()
+fn mono(r: &Ring<Fr>, e: &[u32]) -> GrevLexTerm {
+    GrevLexTerm::from(MonoTerm::from_exponents(r, e).unwrap())
 }
 
 #[test]
@@ -58,7 +58,7 @@ fn compute_gb_parallel_with_pre_cancelled_handle() {
     // happens as the very first action in the seed loop — which we
     // can test via the `Computation` API directly.
     let r = mk_ring(3);
-    let comp = Computation::<Fr, DegRevLex>::new(Arc::clone(&r));
+    let comp = Computation::<Fr, GrevLexTerm>::new(Arc::clone(&r));
     let handle = CancelHandle::from_computation(&comp);
     handle.cancel();
     assert!(comp.is_cancelled());
@@ -68,7 +68,7 @@ fn compute_gb_parallel_with_pre_cancelled_handle() {
 #[test]
 fn cancel_handle_cancels_computation() {
     let r = mk_ring(3);
-    let comp = Computation::<Fr, DegRevLex>::new(Arc::clone(&r));
+    let comp = Computation::<Fr, GrevLexTerm>::new(Arc::clone(&r));
     let handle = CancelHandle::from_computation(&comp);
     assert!(!comp.is_cancelled());
     handle.cancel();

@@ -6,7 +6,8 @@
 
 use ark_bls12_381::Fr;
 use ark_ff::{One, PrimeField, Zero};
-use ark_gb::{DegRevLex, MonoTerm, Poly, Ring};
+use ark_gb::monomial::Monomial;
+use ark_gb::{GrevLexTerm, MonoTerm, Poly, Ring};
 use proptest::prelude::*;
 
 fn arb_fr() -> impl Strategy<Value = Fr> {
@@ -17,24 +18,29 @@ fn arb_nonzero_fr() -> impl Strategy<Value = Fr> {
     arb_fr().prop_map(|f| if f.is_zero() { Fr::one() } else { f })
 }
 
-fn ring_strategy(max_nvars: u32) -> impl Strategy<Value = Ring<Fr, DegRevLex>> {
-    (1u32..=max_nvars).prop_map(|n| Ring::<Fr, DegRevLex>::new(n, DegRevLex).unwrap())
+fn ring_strategy(max_nvars: u32) -> impl Strategy<Value = Ring<Fr>> {
+    (1u32..=max_nvars).prop_map(|n| Ring::<Fr>::new(n).unwrap())
 }
 
 fn poly_strategy(
-    ring: Ring<Fr, DegRevLex>,
+    ring: Ring<Fr>,
     max_terms: usize,
     max_exp: u32,
-) -> impl Strategy<Value = (Ring<Fr, DegRevLex>, Poly<Fr>)> {
+) -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>)> {
     let n = ring.nvars() as usize;
     prop::collection::vec(
         (arb_nonzero_fr(), prop::collection::vec(0u32..max_exp, n)),
         0..=max_terms,
     )
     .prop_map(move |terms| {
-        let converted: Vec<(Fr, MonoTerm)> = terms
+        let converted: Vec<(Fr, GrevLexTerm)> = terms
             .into_iter()
-            .map(|(c, e)| (c, MonoTerm::from_exponents(&ring, &e).unwrap()))
+            .map(|(c, e)| {
+                (
+                    c,
+                    GrevLexTerm::from(MonoTerm::from_exponents(&ring, &e).unwrap()),
+                )
+            })
             .collect();
         let p = Poly::from_terms(&ring, converted);
         (ring.clone(), p)
@@ -44,8 +50,7 @@ fn poly_strategy(
 /// Ring + three polys. Small caps so products stay within the 8-bit
 /// exponent budget (we sum exponents of up to two operands, so
 /// max_exp * 2 ≤ 255 → max_exp ≤ 127).
-fn ring_poly3_strategy()
--> impl Strategy<Value = (Ring<Fr, DegRevLex>, Poly<Fr>, Poly<Fr>, Poly<Fr>)> {
+fn ring_poly3_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>, Poly<Fr>)> {
     ring_strategy(5).prop_flat_map(|r| {
         (
             Just(r.clone()),
@@ -57,7 +62,7 @@ fn ring_poly3_strategy()
     })
 }
 
-fn ring_poly2_strategy() -> impl Strategy<Value = (Ring<Fr, DegRevLex>, Poly<Fr>, Poly<Fr>)> {
+fn ring_poly2_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>)> {
     ring_strategy(5).prop_flat_map(|r| {
         (
             Just(r.clone()),
@@ -68,12 +73,12 @@ fn ring_poly2_strategy() -> impl Strategy<Value = (Ring<Fr, DegRevLex>, Poly<Fr>
     })
 }
 
-fn ring_poly1_strategy() -> impl Strategy<Value = (Ring<Fr, DegRevLex>, Poly<Fr>)> {
+fn ring_poly1_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>)> {
     ring_strategy(5).prop_flat_map(|r| poly_strategy(r, 10, 15))
 }
 
 fn ring_poly_term_strategy()
--> impl Strategy<Value = (Ring<Fr, DegRevLex>, Poly<Fr>, Poly<Fr>, Fr, MonoTerm)> {
+-> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>, Fr, GrevLexTerm)> {
     ring_strategy(4).prop_flat_map(|r| {
         let n = r.nvars() as usize;
         (
@@ -84,7 +89,7 @@ fn ring_poly_term_strategy()
             prop::collection::vec(0u32..20, n),
         )
             .prop_map(move |(r, (_, p1), (_, p2), c, exps)| {
-                let m = MonoTerm::from_exponents(&r, &exps).unwrap();
+                let m = GrevLexTerm::from(MonoTerm::from_exponents(&r, &exps).unwrap());
                 (r, p1, p2, c, m)
             })
     })
@@ -135,7 +140,7 @@ proptest! {
     #[test]
     fn mul_one_is_identity((r, f) in ring_poly1_strategy()) {
         let one_mono = MonoTerm::one(&r);
-        let one = Poly::monomial(&r, Fr::one(), one_mono);
+        let one = Poly::monomial(&r, Fr::one(), GrevLexTerm::from(one_mono));
         prop_assert_eq!(f.mul(&one, &r), f.clone());
     }
 
@@ -224,8 +229,8 @@ proptest! {
 /// The ideal of the cyclic-3 system over Fr.
 #[test]
 fn cyclic3_polynomials_are_canonical() {
-    let r = Ring::<Fr, DegRevLex>::new(3, DegRevLex).unwrap();
-    let mono = |e: &[u32]| MonoTerm::from_exponents(&r, e).unwrap();
+    let r = Ring::<Fr>::new(3).unwrap();
+    let mono = |e: &[u32]| GrevLexTerm::from(MonoTerm::from_exponents(&r, e).unwrap());
     // f1 = x + y + z
     let f1 = Poly::from_terms(
         &r,
@@ -263,9 +268,9 @@ fn cyclic3_polynomials_are_canonical() {
 /// A small ideal: just builds and canonicalises.
 #[test]
 fn small_ideal_fixture() {
-    let r = Ring::<Fr, DegRevLex>::new(1, DegRevLex).unwrap();
-    let one_mono = MonoTerm::one(&r);
-    let x = MonoTerm::from_exponents(&r, &[1]).unwrap();
+    let r = Ring::<Fr>::new(1).unwrap();
+    let one_mono = GrevLexTerm::from(MonoTerm::one(&r));
+    let x = GrevLexTerm::from(MonoTerm::from_exponents(&r, &[1]).unwrap());
     // f = x - 1
     let f = Poly::from_terms(&r, vec![(Fr::one(), x), (-Fr::one(), one_mono)]);
     f.assert_canonical(&r);
@@ -274,9 +279,9 @@ fn small_ideal_fixture() {
 
 #[test]
 fn single_term_edge_cases() {
-    let r = Ring::<Fr, DegRevLex>::new(3, DegRevLex).unwrap();
+    let r = Ring::<Fr>::new(3).unwrap();
     // The multiplicative identity polynomial.
-    let one_poly = Poly::monomial(&r, Fr::one(), MonoTerm::one(&r));
+    let one_poly = Poly::monomial(&r, Fr::one(), GrevLexTerm::from(MonoTerm::one(&r)));
     one_poly.assert_canonical(&r);
     assert_eq!(one_poly.len(), 1);
     assert_eq!(one_poly.lm_deg(), 0);
@@ -288,7 +293,7 @@ fn single_term_edge_cases() {
     let x = Poly::monomial(
         &r,
         Fr::from(3u64),
-        MonoTerm::from_exponents(&r, &[1, 0, 0]).unwrap(),
+        GrevLexTerm::from(MonoTerm::from_exponents(&r, &[1, 0, 0]).unwrap()),
     );
     x.assert_canonical(&r);
     assert_eq!(x.lm_coeff(), Fr::from(3u64));
@@ -306,13 +311,13 @@ fn drop_100k_term_poly_does_not_overflow_stack() {
     // test run. Scaling to 100 K terms costs ~10 ms on the Vec
     // backend and ~40 ms on the linked-list backend — cheap enough
     // to keep in the default suite.
-    let r = Ring::<Fr, DegRevLex>::new(4, DegRevLex).unwrap();
+    let r = Ring::<Fr>::new(4).unwrap();
     let n: usize = 100_000;
 
     // Generate N distinct monomials by sweeping exponents in base-64
     // across four variables; sort descending so
     // `from_descending_terms_unchecked`'s contract holds.
-    let mut distinct: Vec<MonoTerm> = Vec::with_capacity(n);
+    let mut distinct: Vec<GrevLexTerm> = Vec::with_capacity(n);
     'outer: for d in 0u32..64 {
         for c in 0u32..64 {
             for b in 0u32..64 {
@@ -320,13 +325,15 @@ fn drop_100k_term_poly_does_not_overflow_stack() {
                     if distinct.len() >= n {
                         break 'outer;
                     }
-                    distinct.push(MonoTerm::from_exponents(&r, &[a, b, c, d]).unwrap());
+                    distinct.push(GrevLexTerm::from(
+                        MonoTerm::from_exponents(&r, &[a, b, c, d]).unwrap(),
+                    ));
                 }
             }
         }
     }
-    distinct.sort_by(|x, y| y.cmp(x, &r));
-    let terms: Vec<(Fr, MonoTerm)> = distinct.into_iter().map(|m| (Fr::one(), m)).collect();
+    distinct.sort_by(|x, y| y.cmp(x));
+    let terms: Vec<(Fr, GrevLexTerm)> = distinct.into_iter().map(|m| (Fr::one(), m)).collect();
     let p = Poly::from_descending_terms_unchecked(&r, terms);
     assert_eq!(p.len(), n);
     // Dropping the huge poly at scope exit must not overflow the

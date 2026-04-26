@@ -18,8 +18,7 @@ use std::sync::Arc;
 
 use crate::field::Field;
 use crate::kbucket::KBucket;
-use crate::monomial::MonoTerm;
-use crate::ordering::MonoOrder;
+use crate::monomial::{MonoTerm, Monomial};
 use crate::pair::Pair;
 use crate::poly::Poly;
 use crate::ring::Ring;
@@ -30,9 +29,9 @@ use crate::ring::Ring;
 /// single-owner). A later parallel driver passes `LObject`s between
 /// workers by move.
 #[derive(Debug)]
-pub struct LObject<F: Field + Copy, O: MonoOrder> {
+pub struct LObject<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> {
     /// The geobucket accumulator.
-    bucket: KBucket<F, O>,
+    bucket: KBucket<F, M>,
     /// Cached leading sev. 0 when the LObject is zero.
     lm_sev: u64,
     /// Cached leading coeff. 0 when zero.
@@ -45,17 +44,17 @@ pub struct LObject<F: Field + Copy, O: MonoOrder> {
     sugar: u32,
 }
 
-impl<F: Field + Copy, O: MonoOrder> LObject<F, O> {
+impl<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> LObject<F, M> {
     /// Build an `LObject` from an existing `Poly` with sugar seeded
     /// from the poly's leading total degree.
-    pub fn from_poly(ring: Arc<Ring<F, O>>, p: Poly<F>) -> Self {
+    pub fn from_poly(ring: Arc<Ring<F>>, p: Poly<F, M>) -> Self {
         let sugar = p.lm_deg();
         Self::from_poly_with_sugar(ring, p, sugar)
     }
 
     /// Build an `LObject` from an existing `Poly` with an explicit
     /// sugar value.
-    pub fn from_poly_with_sugar(ring: Arc<Ring<F, O>>, p: Poly<F>, sugar: u32) -> Self {
+    pub fn from_poly_with_sugar(ring: Arc<Ring<F>>, p: Poly<F, M>, sugar: u32) -> Self {
         let mut o = Self {
             bucket: KBucket::from_poly(ring, p),
             lm_sev: 0,
@@ -81,9 +80,9 @@ impl<F: Field + Copy, O: MonoOrder> LObject<F, O> {
     /// returned; the caller is responsible for running divisor
     /// reductions on it.
     pub fn from_spoly(
-        ring: Arc<Ring<F, O>>,
-        s_i: &Poly<F>,
-        s_j: &Poly<F>,
+        ring: Arc<Ring<F>>,
+        s_i: &Poly<F, M>,
+        s_j: &Poly<F, M>,
         pair: &Pair,
     ) -> Option<Self> {
         debug_assert!(!s_i.is_zero() && !s_j.is_zero());
@@ -91,8 +90,8 @@ impl<F: Field + Copy, O: MonoOrder> LObject<F, O> {
         let (_, lm_j) = s_j.leading()?;
         let c_i = s_i.lm_coeff();
         let c_j = s_j.lm_coeff();
-        let m_i = pair.lcm.div(lm_i, &ring)?;
-        let m_j = pair.lcm.div(lm_j, &ring)?;
+        let m_i = M::from(pair.lcm.div(lm_i.as_mono_term(), &ring)?);
+        let m_j = M::from(pair.lcm.div(lm_j.as_mono_term(), &ring)?);
 
         // sugar = max(sugar_i + deg(m_i), sugar_j + deg(m_j))
         // For the bootstrap, per-pair sugar is already computed by
@@ -136,7 +135,7 @@ impl<F: Field + Copy, O: MonoOrder> LObject<F, O> {
             Some((c, m)) => {
                 self.lm_sev = m.sev();
                 self.lm_coeff = c;
-                self.lm_deg = m.total_deg();
+                self.lm_deg = m.raw_total_deg();
                 self.is_zero = false;
             }
         }
@@ -184,26 +183,26 @@ impl<F: Field + Copy, O: MonoOrder> LObject<F, O> {
 
     /// Mutable access to the underlying bucket for reduction steps.
     #[inline]
-    pub fn bucket_mut(&mut self) -> &mut KBucket<F, O> {
+    pub fn bucket_mut(&mut self) -> &mut KBucket<F, M> {
         &mut self.bucket
     }
 
     /// Borrow the underlying ring (via the bucket).
     #[inline]
-    pub fn ring(&self) -> &Arc<Ring<F, O>> {
+    pub fn ring(&self) -> &Arc<Ring<F>> {
         self.bucket.ring()
     }
 
     /// Read the bucket's leading term, refreshing the cache. Returns
     /// `None` when the LObject is zero.
-    pub fn leading(&mut self) -> Option<(F, &MonoTerm)> {
+    pub fn leading(&mut self) -> Option<(F, &M)> {
         self.bucket.leading()
     }
 
     /// Extract the current leading term, shrinking the bucket by
     /// that term. Cache is cleared; call `refresh` before reading
     /// cached fields again.
-    pub fn extract_leading(&mut self) -> Option<(F, MonoTerm)> {
+    pub fn extract_leading(&mut self) -> Option<(F, M)> {
         let out = self.bucket.extract_leading();
         // Cache is now stale; mark as such. The driver will refresh.
         self.lm_sev = 0;
@@ -214,7 +213,7 @@ impl<F: Field + Copy, O: MonoOrder> LObject<F, O> {
     }
 
     /// Finalise: consume the LObject and return its polynomial value.
-    pub fn into_poly(self) -> Poly<F> {
+    pub fn into_poly(self) -> Poly<F, M> {
         self.bucket.into_poly()
     }
 
@@ -227,16 +226,16 @@ impl<F: Field + Copy, O: MonoOrder> LObject<F, O> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ordering::DegRevLex;
+    use crate::monomial::{GrevLexTerm, MonoTerm};
     use ark_bls12_381::Fr;
     use ark_ff::One;
 
-    fn mk_ring(nvars: u32) -> Arc<Ring<Fr, DegRevLex>> {
-        Arc::new(Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap())
+    fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
+        Arc::new(Ring::<Fr>::new(nvars).unwrap())
     }
 
-    fn mono(r: &Ring<Fr, DegRevLex>, e: &[u32]) -> MonoTerm {
-        MonoTerm::from_exponents(r, e).unwrap()
+    fn mono(r: &Ring<Fr>, e: &[u32]) -> GrevLexTerm {
+        GrevLexTerm::from(MonoTerm::from_exponents(r, e).unwrap())
     }
 
     #[test]
@@ -277,7 +276,7 @@ mod tests {
             ],
         );
         let lcm = mono(&r, &[1, 1, 1]);
-        let pair = Pair::new(0, 1, lcm, 3, 0);
+        let pair = Pair::new(0, 1, lcm.0, 3, 0);
         let mut o = LObject::from_spoly(Arc::clone(&r), &s_i, &s_j, &pair).unwrap();
         // Expected: -z + 2y; leading in degrevlex (total
         // deg 1 tied, larger-index variable smaller exponent wins)
@@ -291,10 +290,10 @@ mod tests {
     fn from_spoly_trivial_zero() {
         // s_i = x,  s_j = x -- same poly.  S = x*x - x*x = 0.
         let r = mk_ring(2);
-        let s_i = Poly::monomial(&r, Fr::one(), mono(&r, &[1, 0]));
-        let s_j = Poly::monomial(&r, Fr::one(), mono(&r, &[1, 0]));
+        let s_i = Poly::<Fr, GrevLexTerm>::monomial(&r, Fr::one(), mono(&r, &[1, 0]));
+        let s_j = Poly::<Fr, GrevLexTerm>::monomial(&r, Fr::one(), mono(&r, &[1, 0]));
         let lcm = mono(&r, &[1, 0]);
-        let pair = Pair::new(0, 1, lcm, 1, 0);
+        let pair = Pair::new(0, 1, lcm.0, 1, 0);
         assert!(LObject::from_spoly(Arc::clone(&r), &s_i, &s_j, &pair).is_none());
     }
 

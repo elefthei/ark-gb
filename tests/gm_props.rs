@@ -19,18 +19,19 @@
 use ark_bls12_381::Fr;
 use ark_ff::One;
 use ark_gb::gm;
-use ark_gb::{DegRevLex, LSet, MonoTerm, Poly, Ring, SBasis};
+use ark_gb::monomial::{GrevLexTerm, MonoTerm, Monomial};
+use ark_gb::{LSet, Poly, Ring, SBasis};
 use proptest::prelude::*;
 
 const MAX_VARS: u32 = 4;
 const MAX_EXP: u32 = 3;
 const MAX_BASIS: usize = 8;
 
-fn ring_strategy() -> impl Strategy<Value = Ring<Fr, DegRevLex>> {
-    (2u32..=MAX_VARS).prop_map(|n| Ring::<Fr, DegRevLex>::new(n, DegRevLex).unwrap())
+fn ring_strategy() -> impl Strategy<Value = Ring<Fr>> {
+    (2u32..=MAX_VARS).prop_map(|n| Ring::<Fr>::new(n).unwrap())
 }
 
-fn lm_strategy(ring: Ring<Fr, DegRevLex>) -> impl Strategy<Value = MonoTerm> {
+fn lm_strategy(ring: Ring<Fr>) -> impl Strategy<Value = MonoTerm> {
     let n = ring.nvars() as usize;
     prop::collection::vec(0u32..=MAX_EXP, n).prop_filter_map("need nonzero", move |e| {
         if e.iter().all(|&x| x == 0) {
@@ -40,7 +41,7 @@ fn lm_strategy(ring: Ring<Fr, DegRevLex>) -> impl Strategy<Value = MonoTerm> {
     })
 }
 
-fn scenario_strategy() -> impl Strategy<Value = (Ring<Fr, DegRevLex>, Vec<MonoTerm>, MonoTerm)> {
+fn scenario_strategy() -> impl Strategy<Value = (Ring<Fr>, Vec<MonoTerm>, MonoTerm)> {
     ring_strategy().prop_flat_map(|r| {
         let r1 = r.clone();
         let r2 = r.clone();
@@ -54,7 +55,7 @@ fn scenario_strategy() -> impl Strategy<Value = (Ring<Fr, DegRevLex>, Vec<MonoTe
 /// Returns `(i, j)` index pairs only; the LCMs are deterministic
 /// from the inputs so we don't need to check them separately.
 fn slow_enterpairs(
-    ring: &Ring<Fr, DegRevLex>,
+    ring: &Ring<Fr>,
     lms: &[MonoTerm],
     redundant: &[bool],
     h_lm: &MonoTerm,
@@ -104,7 +105,7 @@ fn slow_enterpairs(
         .collect()
 }
 
-fn exp_coprime(ring: &Ring<Fr, DegRevLex>, a: &MonoTerm, b: &MonoTerm) -> bool {
+fn exp_coprime(ring: &Ring<Fr>, a: &MonoTerm, b: &MonoTerm) -> bool {
     for i in 0..ring.nvars() {
         let ea = a.exponent(ring, i).unwrap();
         let eb = b.exponent(ring, i).unwrap();
@@ -125,9 +126,9 @@ proptest! {
         // Build the SBasis with single-term polys.
         let mut s = SBasis::<Fr>::new();
         for m in &basis_lms {
-            s.insert(&r, Poly::monomial(&r, Fr::one(), *m));
+            s.insert(&r, Poly::monomial(&r, Fr::one(), GrevLexTerm::from(*m)));
         }
-        let h = Poly::monomial(&r, Fr::one(), h_lm);
+        let h = Poly::monomial(&r, Fr::one(), GrevLexTerm::from(h_lm));
         let h_idx = s.insert(&r, h.clone()) as u32;
 
         // Snapshot post-redundancy state of the pre-h basis. The
@@ -135,10 +136,7 @@ proptest! {
         // want are for indices 0..h_idx.
         let lms_pre: Vec<MonoTerm> = (0..h_idx as usize)
             .map(|i| {
-                *s.poly(i)
-                    .leading()
-                    .unwrap()
-                    .1
+                *<GrevLexTerm as Monomial<Fr>>::as_mono_term(s.poly(i).leading().unwrap().1)
             })
             .collect();
         let red: Vec<bool> = (0..h_idx as usize).map(|i| s.is_redundant(i)).collect();

@@ -10,20 +10,19 @@ use std::time::Instant;
 use ark_bls12_381::Fr;
 use ark_ff::One;
 use ark_gb::compute_gb;
-use ark_gb::monomial::MonoTerm;
-use ark_gb::ordering::DegRevLex;
+use ark_gb::monomial::{GrevLexTerm, MonoTerm};
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 
-fn mk_ring(nvars: u32) -> Arc<Ring<Fr, DegRevLex>> {
-    Arc::new(Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap())
+fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
+    Arc::new(Ring::<Fr>::new(nvars).unwrap())
 }
 
-fn mono(r: &Ring<Fr, DegRevLex>, e: &[u32]) -> MonoTerm {
-    MonoTerm::from_exponents(r, e).unwrap()
+fn mono(r: &Ring<Fr>, e: &[u32]) -> GrevLexTerm {
+    GrevLexTerm::from(MonoTerm::from_exponents(r, e).unwrap())
 }
 
-fn cyclic5_input(ring: &Arc<Ring<Fr, DegRevLex>>) -> Vec<Poly<Fr>> {
+fn cyclic5_input(ring: &Arc<Ring<Fr>>) -> Vec<Poly<Fr>> {
     let m = |e: &[u32]| mono(ring, e);
     let one = Fr::one();
     let neg_one = -Fr::one();

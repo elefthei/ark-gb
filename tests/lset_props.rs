@@ -9,20 +9,20 @@
 //! * `len()` matches the number of live pairs actually returned.
 
 use ark_bls12_381::Fr;
-use ark_gb::{DegRevLex, LSet, MonoTerm, Pair, Ring};
+use ark_gb::{LSet, MonoTerm, Pair, Ring};
 use proptest::prelude::*;
 
 const NVARS: u32 = 3;
 const MAX_OPS: usize = 30;
 
-fn ring() -> Ring<Fr, DegRevLex> {
-    Ring::<Fr, DegRevLex>::new(NVARS, DegRevLex).unwrap()
+fn ring() -> Ring<Fr> {
+    Ring::<Fr>::new(NVARS).unwrap()
 }
 
 /// A fixed nontrivial LCM; the LSet properties depend only on the
 /// pair's (sugar, arrival, i, j) and identity key, not on the LCM
 /// itself.
-fn fixed_lcm(r: &Ring<Fr, DegRevLex>) -> MonoTerm {
+fn fixed_lcm(r: &Ring<Fr>) -> MonoTerm {
     MonoTerm::from_exponents(r, &[1, 1, 1]).unwrap()
 }
 

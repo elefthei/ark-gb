@@ -6,8 +6,7 @@ use ark_bls12_381::Fr;
 use ark_ff::{Field, One, PrimeField, Zero};
 use ark_gb::compute_gb;
 use ark_gb::compute_gb_parallel;
-use ark_gb::monomial::MonoTerm;
-use ark_gb::ordering::DegRevLex;
+use ark_gb::monomial::{GrevLexTerm, MonoTerm, Monomial};
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 
@@ -39,22 +38,17 @@ impl Prng {
     }
 }
 
-fn mk_ring(nvars: u32) -> Arc<Ring<Fr, DegRevLex>> {
-    Arc::new(Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap())
+fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
+    Arc::new(Ring::<Fr>::new(nvars).unwrap())
 }
 
-fn mono(r: &Ring<Fr, DegRevLex>, e: &[u32]) -> MonoTerm {
-    MonoTerm::from_exponents(r, e).unwrap()
+fn mono(r: &Ring<Fr>, e: &[u32]) -> GrevLexTerm {
+    GrevLexTerm::from(MonoTerm::from_exponents(r, e).unwrap())
 }
 
 /// Generate a random polynomial in `r` with at most `max_terms`
 /// monomials of per-variable exponent at most `max_exp`.
-fn random_poly(
-    rng: &mut Prng,
-    ring: &Ring<Fr, DegRevLex>,
-    max_terms: u32,
-    max_exp: u32,
-) -> Poly<Fr> {
+fn random_poly(rng: &mut Prng, ring: &Ring<Fr>, max_terms: u32, max_exp: u32) -> Poly<Fr> {
     let n = ring.nvars() as usize;
     let t = rng.in_range(1, max_terms);
     let mut terms = Vec::with_capacity(t as usize);
@@ -71,7 +65,7 @@ fn random_poly(
 
 /// Reduce `p` to normal form against `gb` (assumed to be a GB of
 /// some ideal I). Returns the normal form.
-fn normal_form(p: &Poly<Fr>, gb: &[Poly<Fr>], ring: &Ring<Fr, DegRevLex>) -> Poly<Fr> {
+fn normal_form(p: &Poly<Fr>, gb: &[Poly<Fr>], ring: &Ring<Fr>) -> Poly<Fr> {
     let mut cur = p.clone();
     'outer: loop {
         if cur.is_zero() {
@@ -92,7 +86,7 @@ fn normal_form(p: &Poly<Fr>, gb: &[Poly<Fr>], ring: &Ring<Fr, DegRevLex>) -> Pol
             }
         }
         // Leader has no divisor. Try to reduce non-leading terms.
-        let terms: Vec<(Fr, MonoTerm)> = cur.iter().map(|(c, m)| (c, *m)).collect();
+        let terms: Vec<(Fr, GrevLexTerm)> = cur.iter().map(|(c, m)| (c, *m)).collect();
         let mut made_progress = false;
         let mut rebuilt = vec![];
         for (c, m) in terms {

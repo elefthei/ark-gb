@@ -8,14 +8,14 @@
 //! Run with `cargo run --release --example sanity`.
 
 use ark_bls12_381::Fr;
-use ark_gb::{DegRevLex, MonoTerm, Poly, Ring};
+use ark_gb::{GrevLexTerm, MonoTerm, Poly, Ring};
 use std::time::Instant;
 
-fn build_ring() -> Ring<Fr, DegRevLex> {
-    Ring::<Fr, DegRevLex>::new(10, DegRevLex).unwrap()
+fn build_ring() -> Ring<Fr> {
+    Ring::<Fr>::new(10).unwrap()
 }
 
-fn random_poly(ring: &Ring<Fr, DegRevLex>, nterms: usize, seed: u64) -> Poly<Fr> {
+fn random_poly(ring: &Ring<Fr>, nterms: usize, seed: u64) -> Poly<Fr> {
     let n = ring.nvars() as usize;
     let mut s = seed;
     let mut next = || {
@@ -32,7 +32,7 @@ fn random_poly(ring: &Ring<Fr, DegRevLex>, nterms: usize, seed: u64) -> Poly<Fr>
         }
         let c_u64 = (next() % (u32::MAX as u64 - 1)) + 1;
         let c = Fr::from(c_u64);
-        let m = MonoTerm::from_exponents(ring, &exps).unwrap();
+        let m = GrevLexTerm::from(MonoTerm::from_exponents(ring, &exps).unwrap());
         pairs.push((c, m));
     }
     Poly::from_terms(ring, pairs)
@@ -61,7 +61,9 @@ fn main() {
     );
 
     // sub_mul_term
-    let m = MonoTerm::from_exponents(&ring, &[1, 0, 1, 0, 0, 2, 0, 0, 1, 0]).unwrap();
+    let m = GrevLexTerm::from(
+        MonoTerm::from_exponents(&ring, &[1, 0, 1, 0, 0, 2, 0, 0, 1, 0]).unwrap(),
+    );
     let c = Fr::from(7u64);
     let q = random_poly(&ring, 150, 0xdead);
     let p0 = random_poly(&ring, 300, 0xbeef);

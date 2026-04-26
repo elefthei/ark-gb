@@ -16,8 +16,7 @@
 //! contract.
 
 use crate::field::Field;
-use crate::monomial::MonoTerm;
-use crate::ordering::MonoOrder;
+use crate::monomial::{MonoTerm, Monomial};
 use crate::poly::Poly;
 use crate::ring::Ring;
 
@@ -28,14 +27,14 @@ use crate::ring::Ring;
 /// path. `Send + Sync` by construction (only plain arrays of
 /// owned data).
 #[derive(Debug)]
-pub struct SBasis<F: Field + Copy> {
+pub struct SBasis<F: Field + Copy, M: Monomial<F> = crate::monomial::GrevLexTerm> {
     /// The polynomials, in insertion order. `Box` so `&Poly` remains
     /// stable across vector growth — the port plan §7.1 specifies
     /// this layout so the future parallel sweep can hold `&Poly`
     /// across concurrent `insert` calls. Clippy's `vec_box` lint
     /// doesn't know about that requirement.
     #[allow(clippy::vec_box)]
-    polys: Vec<Box<Poly<F>>>,
+    polys: Vec<Box<Poly<F, M>>>,
     /// Leading short-exponent vectors. `sevs[i] == polys[i].lm_sev()`
     /// when `polys[i]` is nonzero, else 0.
     sevs: Vec<u64>,
@@ -68,7 +67,7 @@ impl<F: Field + Copy> Default for SBasis<F> {
     }
 }
 
-impl<F: Field + Copy> SBasis<F> {
+impl<F: Field + Copy, M: Monomial<F>> SBasis<F, M> {
     /// Empty basis.
     pub fn new() -> Self {
         Self {
@@ -96,7 +95,7 @@ impl<F: Field + Copy> SBasis<F> {
 
     /// Borrow the polynomial at `idx`.
     #[inline]
-    pub fn poly(&self, idx: usize) -> &Poly<F> {
+    pub fn poly(&self, idx: usize) -> &Poly<F, M> {
         &self.polys[idx]
     }
 
@@ -138,7 +137,7 @@ impl<F: Field + Copy> SBasis<F> {
     }
 
     /// Iterate non-redundant `(idx, &Poly)` pairs.
-    pub fn iter_active(&self) -> impl Iterator<Item = (usize, &Poly<F>)> + '_ {
+    pub fn iter_active(&self) -> impl Iterator<Item = (usize, &Poly<F, M>)> + '_ {
         self.polys
             .iter()
             .enumerate()
@@ -153,7 +152,7 @@ impl<F: Field + Copy> SBasis<F> {
     /// the index at which `h` was placed. The polynomial must be
     /// nonzero; inserting zero panics in debug builds and no-ops in
     /// release (returns the would-be index without actually pushing).
-    pub fn insert<O: MonoOrder>(&mut self, ring: &Ring<F, O>, h: Poly<F>) -> usize {
+    pub fn insert(&mut self, ring: &Ring<F>, h: Poly<F, M>) -> usize {
         let idx = self.insert_no_clear(h);
         self.clear_redundant_for(ring, idx);
         idx
@@ -169,7 +168,7 @@ impl<F: Field + Copy> SBasis<F> {
     ///
     /// Returns the index at which `h` was placed. Debug-only
     /// assertion: `h` is nonzero.
-    pub fn insert_no_clear(&mut self, h: Poly<F>) -> usize {
+    pub fn insert_no_clear(&mut self, h: Poly<F, M>) -> usize {
         debug_assert!(!h.is_zero(), "SBasis::insert of zero polynomial");
         if h.is_zero() {
             return self.polys.len();
@@ -185,7 +184,7 @@ impl<F: Field + Copy> SBasis<F> {
 
         self.polys.push(Box::new(h));
         self.sevs.push(lm_sev);
-        self.lms.push(lm);
+        self.lms.push(*lm.as_mono_term());
         self.lm_degs.push(lm_deg);
         self.redundant.push(false);
         self.arrival.push(arrival);
@@ -198,7 +197,7 @@ impl<F: Field + Copy> SBasis<F> {
     /// This is the "clearS" half of insert, split out so the bba
     /// driver can run pair generation between the two halves. Safe
     /// to call multiple times — redundancy is monotonic.
-    pub fn clear_redundant_for<O: MonoOrder>(&mut self, ring: &Ring<F, O>, idx: usize) {
+    pub fn clear_redundant_for(&mut self, ring: &Ring<F>, idx: usize) {
         debug_assert!(idx < self.polys.len());
         let lm_sev = self.sevs[idx];
         // ADR-010: read leader from the lms cache rather than
@@ -245,7 +244,7 @@ impl<F: Field + Copy> SBasis<F> {
     /// monomial as the old poly (tail reduction never changes the
     /// leader); this is checked in debug builds and silently trusted
     /// in release. `new_poly` must be nonzero.
-    pub fn replace_poly<O: MonoOrder>(&mut self, ring: &Ring<F, O>, idx: usize, new_poly: Poly<F>) {
+    pub fn replace_poly(&mut self, ring: &Ring<F>, idx: usize, new_poly: Poly<F, M>) {
         debug_assert!(!new_poly.is_zero(), "replace_poly with zero poly");
         debug_assert!(idx < self.polys.len());
         // Debug-only check that leading monomial is preserved.
@@ -257,7 +256,7 @@ impl<F: Field + Copy> SBasis<F> {
                 .1;
             let new_lm = new_poly.leading().unwrap().1;
             assert!(
-                old_lm.cmp(new_lm, ring).is_eq(),
+                old_lm.cmp(new_lm).is_eq(),
                 "replace_poly must preserve leading monomial"
             );
         }
@@ -268,7 +267,7 @@ impl<F: Field + Copy> SBasis<F> {
         // the new leading monomial equals the old one, so this is
         // a no-op semantically; we update anyway in case a future
         // caller relaxes the invariant.
-        self.lms[idx] = *new_poly.leading().expect("non-zero").1;
+        self.lms[idx] = *new_poly.leading().expect("non-zero").1.as_mono_term();
         *self.polys[idx] = new_poly;
     }
 
@@ -293,7 +292,7 @@ impl<F: Field + Copy> SBasis<F> {
     /// - For every `i`, `lm_degs[i] == polys[i].lm_deg()`.
     /// - No polynomial is zero.
     /// - `arrival[i]` is strictly ascending.
-    pub fn assert_canonical<O: MonoOrder>(&self, ring: &Ring<F, O>) {
+    pub fn assert_canonical(&self, ring: &Ring<F>) {
         let n = self.polys.len();
         assert_eq!(self.sevs.len(), n);
         assert_eq!(self.lms.len(), n, "lms cache length mismatch (ADR-010)");
@@ -309,7 +308,7 @@ impl<F: Field + Copy> SBasis<F> {
             // own leading monomial.
             let actual_lm = p.leading().expect("non-zero").1;
             assert!(
-                self.lms[i].cmp(actual_lm, ring).is_eq(),
+                self.lms[i] == *actual_lm.as_mono_term(),
                 "lms cache mismatch at {i}"
             );
             if i > 0 {
@@ -328,12 +327,12 @@ impl<F: Field + Copy> SBasis<F> {
 /// already hold both `sev` values don't pay the hash-map-friendly
 /// `MonoTerm::divides` walk until the sev check passes.
 #[inline]
-pub fn divides_with_sev<F: Field + Copy + Send + Sync, O: MonoOrder>(
+pub fn divides_with_sev<F: Field + Copy + Send + Sync, M: Monomial<F>>(
     m_sev: u64,
     other_sev: u64,
     m: &MonoTerm,
     other: &MonoTerm,
-    ring: &Ring<F, O>,
+    ring: &Ring<F>,
 ) -> bool {
     if (m_sev & !other_sev) != 0 {
         return false;
@@ -344,20 +343,20 @@ pub fn divides_with_sev<F: Field + Copy + Send + Sync, O: MonoOrder>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ordering::DegRevLex;
+    use crate::monomial::{GrevLexTerm, MonoTerm};
     use ark_bls12_381::Fr;
     use ark_ff::One;
 
-    fn mk_ring(nvars: u32) -> Ring<Fr, DegRevLex> {
-        Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap()
+    fn mk_ring(nvars: u32) -> Ring<Fr> {
+        Ring::<Fr>::new(nvars).unwrap()
     }
 
-    fn mono(r: &Ring<Fr, DegRevLex>, e: &[u32]) -> MonoTerm {
-        MonoTerm::from_exponents(r, e).unwrap()
+    fn mono(r: &Ring<Fr>, e: &[u32]) -> GrevLexTerm {
+        GrevLexTerm::from(MonoTerm::from_exponents(r, e).unwrap())
     }
 
-    fn poly1(r: &Ring<Fr, DegRevLex>, c: Fr, e: &[u32]) -> Poly<Fr> {
-        Poly::monomial(r, c, mono(r, e))
+    fn poly1(r: &Ring<Fr>, c: Fr, e: &[u32]) -> Poly<Fr> {
+        Poly::<Fr, GrevLexTerm>::monomial(r, c, mono(r, e))
     }
 
     #[test]

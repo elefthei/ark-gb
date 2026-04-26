@@ -25,8 +25,7 @@
 use crate::bset::BSet;
 use crate::field::Field;
 use crate::lset::LSet;
-use crate::monomial::MonoTerm;
-use crate::ordering::MonoOrder;
+use crate::monomial::{MonoTerm, Monomial};
 use crate::pair::Pair;
 use crate::poly::Poly;
 use crate::ring::Ring;
@@ -44,9 +43,9 @@ use crate::sbasis::SBasis;
 /// S-polynomial reduces to zero before it can contribute anything
 /// new to the basis.
 #[allow(clippy::too_many_arguments)]
-pub fn enter_one_pair_normal<F: Field + Copy + Send + Sync, O: MonoOrder>(
-    ring: &Ring<F, O>,
-    s_basis: &SBasis<F>,
+pub fn enter_one_pair_normal<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
+    ring: &Ring<F>,
+    s_basis: &SBasis<F, M>,
     s_idx: u32,
     h_idx: u32,
     h_lm: &MonoTerm,
@@ -75,7 +74,8 @@ pub fn enter_one_pair_normal<F: Field + Copy + Send + Sync, O: MonoOrder>(
         .poly(s_idx as usize)
         .leading()
         .expect("non-redundant basis element is nonzero")
-        .1;
+        .1
+        .as_mono_term();
     if monomials_are_coprime(h_lm, s_lm, ring) {
         return None;
     }
@@ -101,10 +101,10 @@ pub fn enter_one_pair_normal<F: Field + Copy + Send + Sync, O: MonoOrder>(
 
 /// Coprime check on monomials: no variable has nonzero exponent in
 /// both. Called *after* the sev pre-filter rejects obvious shares.
-fn monomials_are_coprime<F: Field + Copy + Send + Sync, O: MonoOrder>(
+fn monomials_are_coprime<F: Field + Copy + Send + Sync>(
     a: &MonoTerm,
     b: &MonoTerm,
-    ring: &Ring<F, O>,
+    ring: &Ring<F>,
 ) -> bool {
     let n = ring.nvars();
     for i in 0..n {
@@ -134,9 +134,9 @@ fn monomials_are_coprime<F: Field + Copy + Send + Sync, O: MonoOrder>(
 ///    the pair is covered by the chain `(i, h), (j, h)` and gets
 ///    tombstoned. The equality guards preserve the pair whose LCM
 ///    would collapse onto an S–h pair.
-pub fn chain_crit_normal<F: Field + Copy + Send + Sync, O: MonoOrder>(
-    ring: &Ring<F, O>,
-    s_basis: &SBasis<F>,
+pub fn chain_crit_normal<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
+    ring: &Ring<F>,
+    s_basis: &SBasis<F, M>,
     h_lm: &MonoTerm,
     h_lm_sev: u64,
     h_idx: u32,
@@ -218,12 +218,14 @@ pub fn chain_crit_normal<F: Field + Copy + Send + Sync, O: MonoOrder>(
             .poly(pair.i as usize)
             .leading()
             .expect("basis element in a live pair is nonzero")
-            .1;
+            .1
+            .as_mono_term();
         let lm_j = s_basis
             .poly(pair.j as usize)
             .leading()
             .expect("basis element in a live pair is nonzero")
-            .1;
+            .1
+            .as_mono_term();
         let lcm_ih = lm_i.lcm(h_lm, ring);
         if lcm_ih == pair.lcm {
             continue;
@@ -253,16 +255,16 @@ pub fn chain_crit_normal<F: Field + Copy + Send + Sync, O: MonoOrder>(
 /// returned count. The returned value is the number of pairs that
 /// actually made it into L (after both phases of the chain crit).
 #[allow(clippy::too_many_arguments)]
-pub fn enterpairs<F: Field + Copy + Send + Sync, O: MonoOrder>(
-    ring: &Ring<F, O>,
-    s_basis: &SBasis<F>,
+pub fn enterpairs<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
+    ring: &Ring<F>,
+    s_basis: &SBasis<F, M>,
     h_idx: u32,
-    h_poly: &Poly<F>,
+    h_poly: &Poly<F, M>,
     h_sugar: u32,
     l_set: &mut LSet,
     arrival_start: u64,
 ) -> usize {
-    let h_lm = *h_poly.leading().expect("h is nonzero").1;
+    let h_lm = *h_poly.leading().expect("h is nonzero").1.as_mono_term();
     let h_lm_sev = h_poly.lm_sev();
 
     let mut b = BSet::new();
@@ -292,10 +294,10 @@ pub fn enterpairs<F: Field + Copy + Send + Sync, O: MonoOrder>(
 /// `enterS`: append `h` to the basis with redundancy marking. This
 /// is just `SBasis::insert`; re-exported here so the bba driver's
 /// call site reads `enter_s(h)` symmetric with `enterpairs(h)`.
-pub fn enter_s<F: Field + Copy + Send + Sync, O: MonoOrder>(
-    ring: &Ring<F, O>,
-    s_basis: &mut SBasis<F>,
-    h: Poly<F>,
+pub fn enter_s<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
+    ring: &Ring<F>,
+    s_basis: &mut SBasis<F, M>,
+    h: Poly<F, M>,
 ) -> usize {
     s_basis.insert(ring, h)
 }
@@ -303,16 +305,16 @@ pub fn enter_s<F: Field + Copy + Send + Sync, O: MonoOrder>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ordering::DegRevLex;
+    use crate::monomial::GrevLexTerm;
     use ark_bls12_381::Fr;
     use ark_ff::One;
 
-    fn mk_ring(nvars: u32) -> Ring<Fr, DegRevLex> {
-        Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap()
+    fn mk_ring(nvars: u32) -> Ring<Fr> {
+        Ring::<Fr>::new(nvars).unwrap()
     }
 
-    fn mono(r: &Ring<Fr, DegRevLex>, e: &[u32]) -> MonoTerm {
-        MonoTerm::from_exponents(r, e).unwrap()
+    fn mono(r: &Ring<Fr>, e: &[u32]) -> GrevLexTerm {
+        GrevLexTerm::from(MonoTerm::from_exponents(r, e).unwrap())
     }
 
     #[test]
@@ -320,9 +322,12 @@ mod tests {
         // x, y: coprime leading monomials.
         let r = mk_ring(3);
         let mut s = SBasis::new();
-        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[1, 0, 0])));
-        let h = Poly::monomial(&r, Fr::one(), mono(&r, &[0, 1, 0]));
-        let h_lm = *h.leading().unwrap().1;
+        s.insert(
+            &r,
+            Poly::<Fr, GrevLexTerm>::monomial(&r, Fr::one(), mono(&r, &[1, 0, 0])),
+        );
+        let h = Poly::<Fr, GrevLexTerm>::monomial(&r, Fr::one(), mono(&r, &[0, 1, 0]));
+        let h_lm = h.leading().unwrap().1.0;
         let got = enter_one_pair_normal(&r, &s, 0, 1, &h_lm, h.lm_sev(), 1, 0);
         assert!(got.is_none(), "coprime LMs must be pruned by product crit");
     }
@@ -331,14 +336,17 @@ mod tests {
     fn share_variable_keeps_pair() {
         let r = mk_ring(3);
         let mut s = SBasis::new();
-        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[1, 1, 0])));
-        let h = Poly::monomial(&r, Fr::one(), mono(&r, &[0, 1, 1]));
-        let h_lm = *h.leading().unwrap().1;
+        s.insert(
+            &r,
+            Poly::<Fr, GrevLexTerm>::monomial(&r, Fr::one(), mono(&r, &[1, 1, 0])),
+        );
+        let h = Poly::<Fr, GrevLexTerm>::monomial(&r, Fr::one(), mono(&r, &[0, 1, 1]));
+        let h_lm = h.leading().unwrap().1.0;
         let got = enter_one_pair_normal(&r, &s, 0, 1, &h_lm, h.lm_sev(), 2, 0).unwrap();
         assert_eq!(got.i, 0);
         assert_eq!(got.j, 1);
         // LCM = xyz (exp [1,1,1]).
-        assert_eq!(got.lcm, mono(&r, &[1, 1, 1]));
+        assert_eq!(got.lcm, mono(&r, &[1, 1, 1]).0);
     }
 
     #[test]
@@ -347,8 +355,11 @@ mod tests {
         // pruned by product crit. L is empty after enterpairs.
         let r = mk_ring(2);
         let mut s = SBasis::new();
-        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[2, 0])));
-        let h = Poly::monomial(&r, Fr::one(), mono(&r, &[0, 2]));
+        s.insert(
+            &r,
+            Poly::<Fr, GrevLexTerm>::monomial(&r, Fr::one(), mono(&r, &[2, 0])),
+        );
+        let h = Poly::<Fr, GrevLexTerm>::monomial(&r, Fr::one(), mono(&r, &[0, 2]));
         let h_idx = s.insert(&r, h.clone());
         let mut l = LSet::new();
         let inserted = enterpairs(&r, &s, h_idx as u32, &h, h.lm_deg(), &mut l, 0);
@@ -361,15 +372,18 @@ mod tests {
         // S = {xy}, add yz. LMs share y; product crit does NOT prune.
         let r = mk_ring(3);
         let mut s = SBasis::new();
-        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[1, 1, 0])));
-        let h = Poly::monomial(&r, Fr::one(), mono(&r, &[0, 1, 1]));
+        s.insert(
+            &r,
+            Poly::<Fr, GrevLexTerm>::monomial(&r, Fr::one(), mono(&r, &[1, 1, 0])),
+        );
+        let h = Poly::<Fr, GrevLexTerm>::monomial(&r, Fr::one(), mono(&r, &[0, 1, 1]));
         let h_idx = s.insert(&r, h.clone());
         let mut l = LSet::new();
         let inserted = enterpairs(&r, &s, h_idx as u32, &h, h.lm_deg(), &mut l, 0);
         assert_eq!(inserted, 1);
         let pair = l.pop().unwrap();
         assert_eq!((pair.i, pair.j), (0, 1));
-        assert_eq!(pair.lcm, mono(&r, &[1, 1, 1]));
+        assert_eq!(pair.lcm, mono(&r, &[1, 1, 1]).0);
     }
 
     #[test]
@@ -410,10 +424,19 @@ mod tests {
         // Three unrelated LMs (no redundancy triggered): z, y, x.
         // Their divisibility is irrelevant; we'll install crafted
         // pairs directly into B below.
-        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[0, 0, 1])));
-        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[0, 1, 0])));
-        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[1, 0, 0])));
-        let h_lm = mono(&r, &[0, 1, 1]); // y z
+        s.insert(
+            &r,
+            Poly::<Fr, GrevLexTerm>::monomial(&r, Fr::one(), mono(&r, &[0, 0, 1])),
+        );
+        s.insert(
+            &r,
+            Poly::<Fr, GrevLexTerm>::monomial(&r, Fr::one(), mono(&r, &[0, 1, 0])),
+        );
+        s.insert(
+            &r,
+            Poly::<Fr, GrevLexTerm>::monomial(&r, Fr::one(), mono(&r, &[1, 0, 0])),
+        );
+        let h_lm = mono(&r, &[0, 1, 1]).0; // y z
         let h_lm_sev = h_lm.sev();
 
         // Build B by hand:
@@ -421,9 +444,9 @@ mod tests {
         //   (1, 3) LCM = y^3 z     (incomparable with xyz, survives)
         //   (2, 3) LCM = x^2 y^2 z (xyz divides it — dies)
         let mut b = BSet::new();
-        b.push(Pair::new(0, 3, mono(&r, &[1, 1, 1]), 3, 0));
-        b.push(Pair::new(1, 3, mono(&r, &[0, 3, 1]), 4, 1));
-        b.push(Pair::new(2, 3, mono(&r, &[2, 2, 1]), 5, 2));
+        b.push(Pair::new(0, 3, mono(&r, &[1, 1, 1]).0, 3, 0));
+        b.push(Pair::new(1, 3, mono(&r, &[0, 3, 1]).0, 4, 1));
+        b.push(Pair::new(2, 3, mono(&r, &[2, 2, 1]).0, 5, 2));
         let mut l = LSet::new();
 
         chain_crit_normal(&r, &s, &h_lm, h_lm_sev, 3, &mut b, &mut l);
@@ -541,15 +564,21 @@ mod tests {
         // → (0, 1) dies by the L-side chain criterion.
         let r = mk_ring(2);
         let mut s = SBasis::new();
-        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[2, 1])));
-        s.insert(&r, Poly::monomial(&r, Fr::one(), mono(&r, &[1, 2])));
+        s.insert(
+            &r,
+            Poly::<Fr, GrevLexTerm>::monomial(&r, Fr::one(), mono(&r, &[2, 1])),
+        );
+        s.insert(
+            &r,
+            Poly::<Fr, GrevLexTerm>::monomial(&r, Fr::one(), mono(&r, &[1, 2])),
+        );
 
         let mut l = LSet::new();
-        let lcm_01 = mono(&r, &[2, 2]);
+        let lcm_01 = mono(&r, &[2, 2]).0;
         l.insert(Pair::new(0, 1, lcm_01, 4, 0));
         assert!(l.contains(0, 1));
 
-        let h = Poly::monomial(&r, Fr::one(), mono(&r, &[1, 1]));
+        let h = Poly::<Fr, GrevLexTerm>::monomial(&r, Fr::one(), mono(&r, &[1, 1]));
         let h_idx = s.insert(&r, h.clone());
         let _ = enterpairs(&r, &s, h_idx as u32, &h, h.lm_deg(), &mut l, 10);
 

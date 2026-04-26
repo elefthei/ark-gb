@@ -8,17 +8,17 @@
 
 use std::ptr::NonNull;
 
-use crate::field::{Coeff, Field};
-use crate::monomial::MonoTerm;
+use crate::field::Field;
+use crate::monomial::Monomial;
 
 use super::poly_list::Node;
 
 /// Allocate a `Node` via `Box::new`; hand back the raw pointer.
-pub(super) fn alloc<F: Field + Copy>(
+pub(super) fn alloc<F: Field + Copy, M: Monomial<F>>(
     coeff: F,
-    mono: MonoTerm,
-    next: Option<NonNull<Node<F>>>,
-) -> NonNull<Node<F>> {
+    mono: M,
+    next: Option<NonNull<Node<F, M>>>,
+) -> NonNull<Node<F, M>> {
     let b = Box::new(Node { coeff, mono, next });
     // SAFETY: `Box::into_raw` never returns null.
     unsafe { NonNull::new_unchecked(Box::into_raw(b)) }
@@ -32,7 +32,7 @@ pub(super) fn alloc<F: Field + Copy>(
 ///   (or equivalently, cleared it). We do **not** chain-free to
 ///   avoid stack-recursive drop on long lists.
 /// * `ptr` must have been obtained from an earlier `alloc` call.
-pub(super) unsafe fn dealloc<F: Field + Copy>(ptr: NonNull<Node<F>>) {
+pub(super) unsafe fn dealloc<F: Field + Copy, M: Monomial<F>>(ptr: NonNull<Node<F, M>>) {
     // Safety-checked by contract above: reclaim the `Box` and drop
     // it. The implicit drop walks only this one node because the
     // caller has already cleared `next`.

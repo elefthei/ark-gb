@@ -14,12 +14,12 @@ use std::time::Instant;
 use ark_bls12_381::Fr;
 use ark_ff::One;
 use ark_gb::gm;
-use ark_gb::{DegRevLex, LSet, MonoTerm, Pair, Poly, Ring, SBasis};
+use ark_gb::{GrevLexTerm, LSet, MonoTerm, Pair, Poly, Ring, SBasis};
 
 const NVARS: u32 = 6;
 
-fn mk_ring() -> Ring<Fr, DegRevLex> {
-    Ring::<Fr, DegRevLex>::new(NVARS, DegRevLex).unwrap()
+fn mk_ring() -> Ring<Fr> {
+    Ring::<Fr>::new(NVARS).unwrap()
 }
 
 /// A simple LCG so the example stays dependency-free.
@@ -37,7 +37,7 @@ impl Lcg {
     }
 }
 
-fn random_lm(r: &Ring<Fr, DegRevLex>, rng: &mut Lcg) -> MonoTerm {
+fn random_lm(r: &Ring<Fr>, rng: &mut Lcg) -> GrevLexTerm {
     let n = r.nvars() as usize;
     let mut exps = vec![0u32; n];
     // Sparse: 2 variables with small exponents.
@@ -48,13 +48,13 @@ fn random_lm(r: &Ring<Fr, DegRevLex>, rng: &mut Lcg) -> MonoTerm {
             exps[k] = 6;
         }
     }
-    MonoTerm::from_exponents(r, &exps).unwrap()
+    GrevLexTerm::from(MonoTerm::from_exponents(r, &exps).unwrap())
 }
 
 fn bench_enterpairs() {
     let r = mk_ring();
     let mut rng = Lcg(0xdead_beef_dead_beef);
-    let mut s: SBasis<Fr> = SBasis::new();
+    let mut s: SBasis<Fr, GrevLexTerm> = SBasis::new();
     for _ in 0..100 {
         let lm = random_lm(&r, &mut rng);
         s.insert(&r, Poly::monomial(&r, Fr::one(), lm));

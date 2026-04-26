@@ -1,36 +1,4 @@
 //! Regression-detection suite for `compute_gb`.
-//!
-//! Runs on the same problem instances as the Criterion bench
-//! (`benches/groebner.rs`), reusing the builders from
-//! `benches/groebner_shared.rs`. Five layers of checks per
-//! (family, n, order):
-//!
-//! 1. **Ideal inclusion + S-pair closure** — via
-//!    [`ark_gb::validate::is_groebner_basis`] (Buchberger's iff).
-//! 2. **Shuffle invariance** — reordering input generators
-//!    (deterministic seed) yields the same reduced GB.
-//! 3. **Standard-monomial count** — for these 0-dim ideals, the count
-//!    is independent of monomial order, and equals `2^n` for Katsura-n
-//!    and `n!` for Cyclic-n on small cases.
-//! 4. **Cross-order dim invariance** — `DegRevLex` and `Elim` agree on
-//!    the standard-monomial count.
-//! 5. **Pinned reduced GBs** — Katsura-3 and Cyclic-3 under DegRevLex,
-//!    with literal coefficients generated once via sympy
-//!    (`sympy.polys.groebner.groebner(..., order='grevlex')`) and pasted
-//!    here. This catches numeric regressions in the reducer.
-//!
-//! Tests are deliberately scoped to the small Katsura-3 / Cyclic-3
-//! cases so the suite runs quickly and is suitable for `cargo test` on
-//! every commit. Heavy cases (Katsura-4,5 / Cyclic-4) are covered by
-//! the Criterion bench; regressions on larger sizes therefore surface
-//! there, not here.
-//!
-//! ### Determinism
-//!
-//! ark-gb's parallel path is permutation-equivalent but not
-//! bit-for-bit deterministic across thread counts. Shuffle-invariance
-//! tests therefore drive `ark_gb::bba::compute_gb_serial` directly so
-//! they don't depend on `ARK_GB_THREADS`.
 
 use std::sync::Arc;
 
@@ -38,8 +6,7 @@ use ark_bls12_381::Fr;
 use ark_ff::Field as ArkField;
 use ark_gb::bba::compute_gb_serial;
 use ark_gb::compute_gb;
-use ark_gb::monomial::MonoTerm;
-use ark_gb::ordering::MonoOrder;
+use ark_gb::monomial::{GrevLexTerm, MonoTerm, Monomial, OddElimTerm};
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 use ark_gb::validate::is_groebner_basis;
@@ -52,8 +19,6 @@ use shared::{cyclic_polys, elim_ring, grevlex_ring, katsura_polys, one_poly, var
 // Helpers.
 // ---------------------------------------------------------------------------
 
-/// Tiny deterministic shuffle (Fisher–Yates with a splitmix64 stream)
-/// so the test is reproducible without pulling in `rand`.
 fn deterministic_shuffle<X: Clone>(xs: &[X], seed: u64) -> Vec<X> {
     let mut out: Vec<X> = xs.to_vec();
     let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xDEAD_BEEF_DEAD_BEEF;
@@ -71,11 +36,9 @@ fn deterministic_shuffle<X: Clone>(xs: &[X], seed: u64) -> Vec<X> {
     out
 }
 
-fn assert_proper<O: MonoOrder + 'static>(label: &str, gb: &[Poly<Fr>], ring: &Ring<Fr, O>) {
+fn assert_proper<M: Monomial<Fr>>(label: &str, gb: &[Poly<Fr, M>], ring: &Ring<Fr>) {
     assert!(!gb.is_empty(), "[{label}] empty reduced GB");
-    let nvars = ring.nvars() as usize;
-    let zero_exps = vec![0u32; nvars];
-    let unit = MonoTerm::from_exponents(ring, &zero_exps).unwrap();
+    let unit = M::one(ring);
     let unit_seen = gb.iter().any(|p| {
         let terms: Vec<_> = p.iter().collect();
         terms.len() == 1 && *terms[0].1 == unit
@@ -86,21 +49,13 @@ fn assert_proper<O: MonoOrder + 'static>(label: &str, gb: &[Poly<Fr>], ring: &Ri
     );
 }
 
-/// Count standard monomials of `gb` (= `dim_F(R/I)` when `I` is 0-dim).
-/// Returns `None` if any variable lacks a pure-power leading monomial
-/// in `gb`, meaning the ideal is positive-dimensional.
-fn standard_monomial_count<O: MonoOrder + 'static>(
-    ring: &Ring<Fr, O>,
-    gb: &[Poly<Fr>],
-) -> Option<usize> {
+fn standard_monomial_count<M: Monomial<Fr>>(ring: &Ring<Fr>, gb: &[Poly<Fr, M>]) -> Option<usize> {
     let nvars = ring.nvars() as usize;
     let lm_exps: Vec<Vec<u32>> = gb
         .iter()
         .filter_map(|p| p.leading().map(|(_, m)| m.exponents(ring)))
         .collect();
 
-    // For each variable, smallest pure-power exponent appearing as a
-    // leading monomial. Bounding box for std monomials: per var [0, d_v).
     let bounds: Vec<u32> = (0..nvars)
         .map(|i| {
             lm_exps
@@ -128,8 +83,6 @@ fn standard_monomial_count<O: MonoOrder + 'static>(
         if !lm_exps.iter().any(|lm| divides(lm, &candidate)) {
             count += 1;
         }
-
-        // Increment idx within bounding box.
         let mut i = 0;
         loop {
             if i == nvars {
@@ -145,40 +98,31 @@ fn standard_monomial_count<O: MonoOrder + 'static>(
     }
 }
 
-/// Ideal inclusion + S-pair closure (Layers 1a+1b) via Buchberger's iff.
-fn assert_is_gb<O: MonoOrder + 'static>(
+fn assert_is_gb<M: Monomial<Fr> + From<MonoTerm>>(
     label: &str,
-    ring: &Arc<Ring<Fr, O>>,
-    input: &[Poly<Fr>],
-    gb: &[Poly<Fr>],
+    ring: &Arc<Ring<Fr>>,
+    input: &[Poly<Fr, M>],
+    gb: &[Poly<Fr, M>],
 ) {
     if let Err(err) = is_groebner_basis(ring, input, gb) {
         panic!("[{label}] compute_gb output failed Buchberger's criterion: {err:?}");
     }
 }
 
-// ---------------------------------------------------------------------------
-// Self-checks parametrized over (family, n, order).
-// ---------------------------------------------------------------------------
-
-fn run_self_checks<O: MonoOrder + 'static>(
+fn run_self_checks<M: Monomial<Fr> + From<MonoTerm> + 'static>(
     label: &str,
-    ring: &Arc<Ring<Fr, O>>,
-    input: &[Poly<Fr>],
+    ring: &Arc<Ring<Fr>>,
+    input: &[Poly<Fr, M>],
     expected_dim: Option<usize>,
-) -> Vec<Poly<Fr>> {
+) -> Vec<Poly<Fr, M>> {
     let gb = compute_gb_serial(Arc::clone(ring), input.to_vec());
     assert_proper(label, &gb, ring);
-
-    // Layers 1a + 1b — Buchberger's iff.
     assert_is_gb(label, ring, input, &gb);
 
-    // Layer 2e — input-shuffle invariance.
     let shuffled = deterministic_shuffle(input, 0x00C0_FFEE_u64);
     let gb_shuf = compute_gb_serial(Arc::clone(ring), shuffled);
     assert_eq!(gb, gb_shuf, "[{label}] reduced GB depends on input order");
 
-    // Layer 2f — standard-monomial count.
     let dim = standard_monomial_count(ring, &gb);
     if let Some(exp) = expected_dim {
         assert_eq!(
@@ -191,84 +135,69 @@ fn run_self_checks<O: MonoOrder + 'static>(
 }
 
 // ---------------------------------------------------------------------------
-// Default-run cases — fast.
+// GrevLexTerm cases.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn katsura_3_grevlex_self_checks() {
     let ring = grevlex_ring(3);
-    let inputs = katsura_polys(&ring);
+    let inputs = katsura_polys::<GrevLexTerm>(&ring);
     run_self_checks("katsura/3/grevlex", &ring, &inputs, Some(1 << 2));
-}
-
-#[test]
-fn katsura_3_elim_self_checks() {
-    let ring = elim_ring(3);
-    let inputs = katsura_polys(&ring);
-    run_self_checks("katsura/3/elim", &ring, &inputs, Some(1 << 2));
-}
-
-#[test]
-fn katsura_3_dim_order_invariant() {
-    let ring_g = grevlex_ring(3);
-    let ring_e = elim_ring(3);
-    let gb_g = compute_gb(Arc::clone(&ring_g), katsura_polys(&ring_g));
-    let gb_e = compute_gb(Arc::clone(&ring_e), katsura_polys(&ring_e));
-    let d_g = standard_monomial_count(&ring_g, &gb_g);
-    let d_e = standard_monomial_count(&ring_e, &gb_e);
-    assert_eq!(
-        d_g, d_e,
-        "katsura/3 standard-monomial count differs between grevlex and elim (got {d_g:?} vs {d_e:?})"
-    );
-    assert_eq!(
-        d_g,
-        Some(1 << 2),
-        "katsura/3 should be 0-dim with 4 std mons"
-    );
 }
 
 #[test]
 fn cyclic_3_grevlex_self_checks() {
     let ring = grevlex_ring(3);
-    let inputs = cyclic_polys(&ring);
+    let inputs = cyclic_polys::<GrevLexTerm>(&ring);
     run_self_checks("cyclic/3/grevlex", &ring, &inputs, None);
+}
+
+// ---------------------------------------------------------------------------
+// OddElimTerm cases.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn katsura_3_elim_self_checks() {
+    let ring = elim_ring(3);
+    let inputs = katsura_polys::<OddElimTerm>(&ring);
+    run_self_checks("katsura/3/elim", &ring, &inputs, Some(1 << 2));
 }
 
 #[test]
 fn cyclic_3_elim_self_checks() {
     let ring = elim_ring(3);
-    let inputs = cyclic_polys(&ring);
+    let inputs = cyclic_polys::<OddElimTerm>(&ring);
     run_self_checks("cyclic/3/elim", &ring, &inputs, None);
+}
+
+// ---------------------------------------------------------------------------
+// Cross-order dimension invariance.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn katsura_3_dim_order_invariant() {
+    let ring = grevlex_ring(3);
+    let gb_g = compute_gb(Arc::clone(&ring), katsura_polys::<GrevLexTerm>(&ring));
+    let gb_e = compute_gb(Arc::clone(&ring), katsura_polys::<OddElimTerm>(&ring));
+    let d_g = standard_monomial_count(&ring, &gb_g);
+    let d_e = standard_monomial_count(&ring, &gb_e);
+    assert_eq!(d_g, d_e, "katsura/3 std-mono count differs between orders");
+    assert_eq!(d_g, Some(1 << 2));
 }
 
 #[test]
 fn cyclic_3_dim_order_invariant() {
-    let ring_g = grevlex_ring(3);
-    let ring_e = elim_ring(3);
-    let gb_g = compute_gb(Arc::clone(&ring_g), cyclic_polys(&ring_g));
-    let gb_e = compute_gb(Arc::clone(&ring_e), cyclic_polys(&ring_e));
-    let d_g = standard_monomial_count(&ring_g, &gb_g);
-    let d_e = standard_monomial_count(&ring_e, &gb_e);
-    assert_eq!(
-        d_g, d_e,
-        "cyclic/3 standard-monomial count differs between grevlex and elim ({d_g:?} vs {d_e:?})"
-    );
-    // Cyclic-3 is 0-dim with 6 finite roots over an algebraically
-    // closed field (well-known); pin alongside the order-invariance
-    // check.
-    assert_eq!(d_g, Some(6), "cyclic/3 should be 0-dim with 6 std mons");
+    let ring = grevlex_ring(3);
+    let gb_g = compute_gb(Arc::clone(&ring), cyclic_polys::<GrevLexTerm>(&ring));
+    let gb_e = compute_gb(Arc::clone(&ring), cyclic_polys::<OddElimTerm>(&ring));
+    let d_g = standard_monomial_count(&ring, &gb_g);
+    let d_e = standard_monomial_count(&ring, &gb_e);
+    assert_eq!(d_g, d_e, "cyclic/3 std-mono count differs between orders");
+    assert_eq!(d_g, Some(6));
 }
 
 // ---------------------------------------------------------------------------
-// Layer 3g — sympy-pinned reduced GBs.
-//
-// Reference values were generated once with sympy:
-//
-//   sympy.polys.groebner.groebner(I, *gens, order='grevlex')
-//
-// where the generators are k0 > k1 > k2 (Katsura-3) or c0 > c1 > c2
-// (Cyclic-3). Pasted here as integer-rational literals
-// `(numerator, denominator, [(var_idx, power), ...])`.
+// Pinned reduced GBs (sympy reference).
 // ---------------------------------------------------------------------------
 
 type PolyLit<'a> = &'a [(i64, u64, &'a [(usize, usize)])];
@@ -281,21 +210,14 @@ fn fr_from_rational(num: i64, den: u64) -> Fr {
     n * d.inverse().expect("denominator must be non-zero")
 }
 
-fn poly_from_lit<O: MonoOrder + 'static>(ring: &Ring<Fr, O>, lit: PolyLit<'_>) -> Poly<Fr> {
-    let mut out = Poly::<Fr>::zero();
+fn poly_from_lit(ring: &Ring<Fr>, lit: PolyLit<'_>) -> Poly<Fr, GrevLexTerm> {
+    let mut out = Poly::<Fr, GrevLexTerm>::zero();
     for &(num, den, mono) in lit {
         let c = fr_from_rational(num, den);
-        // Build c * prod(var_poly(vi)^pow).
-        let mut term = Poly::from_terms(
-            ring,
-            vec![(
-                c,
-                MonoTerm::from_exponents(ring, &vec![0u32; ring.nvars() as usize]).unwrap(),
-            )],
-        );
+        let mut term = Poly::<Fr, GrevLexTerm>::from_terms(ring, vec![(c, GrevLexTerm::one(ring))]);
         for &(vi, pow) in mono {
             for _ in 0..pow {
-                let v = var_poly(ring, vi);
+                let v = var_poly::<GrevLexTerm>(ring, vi);
                 term = term.mul(&v, ring);
             }
         }
@@ -304,26 +226,21 @@ fn poly_from_lit<O: MonoOrder + 'static>(ring: &Ring<Fr, O>, lit: PolyLit<'_>) -
     out
 }
 
-fn pinned_basis<O: MonoOrder + 'static>(ring: &Ring<Fr, O>, lits: BasisLit<'_>) -> Vec<Poly<Fr>> {
+fn pinned_basis(ring: &Ring<Fr>, lits: BasisLit<'_>) -> Vec<Poly<Fr, GrevLexTerm>> {
     lits.iter().map(|p| poly_from_lit(ring, p)).collect()
 }
 
-/// On a true GB, `compute_gb_serial` is idempotent up to monicization
-/// and sort. We canonicalize the pinned reference by re-running it
-/// through the pipeline, then byte-compare with our own GB.
-fn assert_matches_pin<O: MonoOrder + 'static>(
+fn assert_matches_pin(
     label: &str,
-    ring: &Arc<Ring<Fr, O>>,
-    our_gb: &[Poly<Fr>],
-    pinned: Vec<Poly<Fr>>,
+    ring: &Arc<Ring<Fr>>,
+    our_gb: &[Poly<Fr, GrevLexTerm>],
+    pinned: Vec<Poly<Fr, GrevLexTerm>>,
 ) {
     let pinned_canon = compute_gb_serial(Arc::clone(ring), pinned);
     assert_eq!(
         our_gb.len(),
         pinned_canon.len(),
-        "[{label}] reduced-GB length differs from sympy reference ({} vs {})",
-        our_gb.len(),
-        pinned_canon.len()
+        "[{label}] GB length differs from sympy reference"
     );
     assert_eq!(
         our_gb,
@@ -331,8 +248,6 @@ fn assert_matches_pin<O: MonoOrder + 'static>(
         "[{label}] reduced GB doesn't match sympy reference"
     );
 }
-
-// --- Pinned literals (generated by sympy, see header) -----------------------
 
 const KATSURA_3_GB: BasisLit<'static> = &[
     &[
@@ -371,12 +286,10 @@ const CYCLIC_3_GB: BasisLit<'static> = &[
     &[(1, 1, &[(0, 1)]), (1, 1, &[(1, 1)]), (1, 1, &[(2, 1)])],
 ];
 
-// --- Pinned tests -----------------------------------------------------------
-
 #[test]
 fn katsura_3_grevlex_pinned() {
     let ring = grevlex_ring(3);
-    let our_gb = compute_gb_serial(Arc::clone(&ring), katsura_polys(&ring));
+    let our_gb = compute_gb_serial(Arc::clone(&ring), katsura_polys::<GrevLexTerm>(&ring));
     let pinned = pinned_basis(&ring, KATSURA_3_GB);
     assert_matches_pin("katsura/3/grevlex/pinned", &ring, &our_gb, pinned);
 }
@@ -384,21 +297,16 @@ fn katsura_3_grevlex_pinned() {
 #[test]
 fn cyclic_3_grevlex_pinned() {
     let ring = grevlex_ring(3);
-    let our_gb = compute_gb_serial(Arc::clone(&ring), cyclic_polys(&ring));
+    let our_gb = compute_gb_serial(Arc::clone(&ring), cyclic_polys::<GrevLexTerm>(&ring));
     let pinned = pinned_basis(&ring, CYCLIC_3_GB);
     assert_matches_pin("cyclic/3/grevlex/pinned", &ring, &our_gb, pinned);
 }
 
-// ---------------------------------------------------------------------------
-// Trivial sanity — the helpers themselves.
-// ---------------------------------------------------------------------------
-
 #[test]
 fn helpers_one_poly_is_unit() {
     let ring = grevlex_ring(3);
-    let one = one_poly(&ring);
-    let v0 = var_poly(&ring, 0);
+    let one = one_poly::<GrevLexTerm>(&ring);
+    let v0 = var_poly::<GrevLexTerm>(&ring, 0);
     let prod = v0.mul(&one, &ring);
     assert_eq!(prod, v0, "1 * x_0 must equal x_0");
-    let _ = Fr::ONE;
 }

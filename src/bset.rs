@@ -11,7 +11,6 @@
 //! walks it linearly and the hash index is enough for
 //! remove-by-indices. No priority queue here.
 
-use crate::ordering::MonoOrder;
 use std::collections::HashMap;
 
 use crate::pair::Pair;
@@ -110,9 +109,9 @@ impl BSet {
     }
 
     /// Debug-only invariant check.
-    pub fn assert_canonical<F: ark_ff::Field + Copy + Send + Sync, O: MonoOrder>(
+    pub fn assert_canonical<F: ark_ff::Field + Copy + Send + Sync>(
         &self,
-        ring: &crate::ring::Ring<F, O>,
+        ring: &crate::ring::Ring<F>,
     ) {
         assert_eq!(self.pairs.len(), self.by_indices.len(), "index size");
         assert_eq!(
@@ -136,15 +135,14 @@ impl BSet {
 mod tests {
     use super::*;
     use crate::monomial::MonoTerm;
-    use crate::ordering::DegRevLex;
     use crate::ring::Ring;
     use ark_bls12_381::Fr;
 
-    fn mk_ring(nvars: u32) -> Ring<Fr, DegRevLex> {
-        Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap()
+    fn mk_ring(nvars: u32) -> Ring<Fr> {
+        Ring::<Fr>::new(nvars).unwrap()
     }
 
-    fn mk_pair(r: &Ring<Fr, DegRevLex>, i: u32, j: u32, sugar: u32, arrival: u64) -> Pair {
+    fn mk_pair(r: &Ring<Fr>, i: u32, j: u32, sugar: u32, arrival: u64) -> Pair {
         let lcm = MonoTerm::from_exponents(r, &vec![1u32; r.nvars() as usize]).unwrap();
         Pair::new(i, j, lcm, sugar, arrival)
     }

@@ -1,31 +1,11 @@
-//! Criterion benchmarks for `ark_gb::compute_gb` (the BBA Buchberger
-//! implementation) on the canonical Katsura-n / Cyclic-n families used
-//! by SymbolicData and the wider CAS ecosystem (Singular, Maple, Magma).
-//!
-//! ark-gb's `compute_gb` always returns the **reduced** Gröbner basis
-//! (`tail_reduce_all` runs internally), so there is no separate "raw"
-//! variant to bench — published CAS timings against the reduced GB are
-//! the right comparison point and `compute_gb` is what they correspond
-//! to.
-//!
-//! # Source of generators
-//!
-//! The Katsura / Cyclic generators (in `groebner_shared.rs`) are direct
-//! ports of Singular `polylib.lib` procedures that Sage, Macaulay2, and
-//! the SD tools (`sdsage`) all invoke via `singular.katsura(n)` /
-//! `singular.cyclic(n)`. Correctness is cross-checked against Sage's
-//! published small-n examples (`tests/groebner_sage.rs`) and via
-//! Buchberger's iff property (`tests/groebner_correctness.rs`).
-//!
-//! Run with: `cargo bench --bench groebner`
-//! Filter  : `cargo bench --bench groebner gb_katsura_grevlex/3`
+//! Criterion benchmarks for `ark_gb::compute_gb`.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use ark_bls12_381::Fr;
 use ark_gb::bba::compute_gb_serial;
-use ark_gb::ordering::MonoOrder;
+use ark_gb::monomial::{GrevLexTerm, MonoTerm, Monomial, OddElimTerm};
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 use ark_gb::validate::is_groebner_basis;
@@ -38,30 +18,16 @@ use shared::{
     katsura_polys,
 };
 
-// ---------------------------------------------------------------------------
-// Criterion knobs.
-// ---------------------------------------------------------------------------
-
 const SAMPLE_SIZE: usize = 10;
 const MEASUREMENT_TIME: Duration = Duration::from_secs(30);
 
-// ---------------------------------------------------------------------------
-// Generic helpers.
-// ---------------------------------------------------------------------------
-
-/// Time `compute_gb_serial` (the deterministic serial path) on each `n`
-/// in `sizes`. We use `iter_batched` so the per-iter input clone is
-/// excluded from the measurement.
-fn bench_compute_gb<O: MonoOrder + 'static, RB, IB>(
+fn bench_compute_gb<M: Monomial<Fr> + From<MonoTerm> + 'static>(
     c: &mut Criterion,
     group_name: &str,
     sizes: &[usize],
-    ring_builder: RB,
-    input_builder: IB,
-) where
-    RB: Fn(usize) -> Arc<Ring<Fr, O>>,
-    IB: Fn(&Ring<Fr, O>) -> Vec<Poly<Fr>>,
-{
+    ring_builder: fn(usize) -> Arc<Ring<Fr>>,
+    input_builder: fn(&Ring<Fr>) -> Vec<Poly<Fr, M>>,
+) {
     let mut group = c.benchmark_group(group_name);
     group.sample_size(SAMPLE_SIZE);
     group.measurement_time(MEASUREMENT_TIME);
@@ -83,20 +49,13 @@ fn bench_compute_gb<O: MonoOrder + 'static, RB, IB>(
     group.finish();
 }
 
-/// Time `is_groebner_basis(input, gb)` for each `n` in `sizes`.
-/// Pre-computes the reduced GB once outside the iter loop; each iter
-/// reduces every input generator + every S-poly modulo that basis
-/// (Buchberger's iff check).
-fn bench_validation<O: MonoOrder + 'static, RB, IB>(
+fn bench_validation<M: Monomial<Fr> + From<MonoTerm> + 'static>(
     c: &mut Criterion,
     group_name: &str,
     sizes: &[usize],
-    ring_builder: RB,
-    input_builder: IB,
-) where
-    RB: Fn(usize) -> Arc<Ring<Fr, O>>,
-    IB: Fn(&Ring<Fr, O>) -> Vec<Poly<Fr>>,
-{
+    ring_builder: fn(usize) -> Arc<Ring<Fr>>,
+    input_builder: fn(&Ring<Fr>) -> Vec<Poly<Fr, M>>,
+) {
     let mut group = c.benchmark_group(group_name);
     group.sample_size(SAMPLE_SIZE);
     group.measurement_time(MEASUREMENT_TIME);
@@ -113,12 +72,8 @@ fn bench_validation<O: MonoOrder + 'static, RB, IB>(
     group.finish();
 }
 
-// ---------------------------------------------------------------------------
-// Bench entry points — one line of wiring per (family × order).
-// ---------------------------------------------------------------------------
-
 fn bench_gb_katsura_elim(c: &mut Criterion) {
-    bench_compute_gb(
+    bench_compute_gb::<OddElimTerm>(
         c,
         "gb_katsura_elim",
         KATSURA_ELIM_SIZES,
@@ -128,7 +83,7 @@ fn bench_gb_katsura_elim(c: &mut Criterion) {
 }
 
 fn bench_gb_katsura_grevlex(c: &mut Criterion) {
-    bench_compute_gb(
+    bench_compute_gb::<GrevLexTerm>(
         c,
         "gb_katsura_grevlex",
         KATSURA_GREVLEX_SIZES,
@@ -138,11 +93,11 @@ fn bench_gb_katsura_grevlex(c: &mut Criterion) {
 }
 
 fn bench_gb_cyclic_elim(c: &mut Criterion) {
-    bench_compute_gb(c, "gb_cyclic_elim", CYCLIC_SIZES, elim_ring, cyclic_polys);
+    bench_compute_gb::<OddElimTerm>(c, "gb_cyclic_elim", CYCLIC_SIZES, elim_ring, cyclic_polys);
 }
 
 fn bench_gb_cyclic_grevlex(c: &mut Criterion) {
-    bench_compute_gb(
+    bench_compute_gb::<GrevLexTerm>(
         c,
         "gb_cyclic_grevlex",
         CYCLIC_SIZES,
@@ -152,7 +107,7 @@ fn bench_gb_cyclic_grevlex(c: &mut Criterion) {
 }
 
 fn bench_gb_validate_katsura(c: &mut Criterion) {
-    bench_validation(
+    bench_validation::<GrevLexTerm>(
         c,
         "gb_validate_katsura",
         KATSURA_GREVLEX_SIZES,
@@ -162,7 +117,7 @@ fn bench_gb_validate_katsura(c: &mut Criterion) {
 }
 
 fn bench_gb_validate_cyclic(c: &mut Criterion) {
-    bench_validation(
+    bench_validation::<GrevLexTerm>(
         c,
         "gb_validate_cyclic",
         CYCLIC_SIZES,

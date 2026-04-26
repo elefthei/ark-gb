@@ -50,8 +50,7 @@ pub use field::Field;
 pub use kbucket::KBucket;
 pub use lobject::LObject;
 pub use lset::LSet;
-pub use monomial::MonoTerm;
-pub use ordering::{DegRevLex, Elim, MonoOrder};
+pub use monomial::{GrevLexTerm, MonoTerm, Monomial, OddElimTerm};
 pub use pair::{Pair, PairKey};
 pub use parallel::{CancelHandle, Cancelled, compute_gb_parallel};
 pub use poly::Poly;
@@ -61,11 +60,12 @@ pub use sbasis::SBasis;
 // Compile-time Send + Sync check on the key public types.
 #[cfg(test)]
 const _: fn() = || {
+    use crate::monomial::GrevLexTerm;
     use ark_bls12_381::Fr;
     fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<Ring<Fr, DegRevLex>>();
+    assert_send_sync::<Ring<Fr>>();
     assert_send_sync::<MonoTerm>();
-    assert_send_sync::<Poly<Fr>>();
+    assert_send_sync::<Poly<Fr, GrevLexTerm>>();
     assert_send_sync::<Pair>();
     assert_send_sync::<SBasis<Fr>>();
     assert_send_sync::<LSet>();
@@ -76,8 +76,9 @@ const _: fn() = || {
 // (per-thread ownership).
 #[cfg(test)]
 const _: fn() = || {
+    use crate::monomial::GrevLexTerm;
     use ark_bls12_381::Fr;
     fn assert_send<T: Send>() {}
-    assert_send::<KBucket<Fr, DegRevLex>>();
-    assert_send::<LObject<Fr, DegRevLex>>();
+    assert_send::<KBucket<Fr, GrevLexTerm>>();
+    assert_send::<LObject<Fr, GrevLexTerm>>();
 };

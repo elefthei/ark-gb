@@ -17,24 +17,23 @@ use std::time::Instant;
 use ark_bls12_381::Fr;
 use ark_ff::{One, Zero};
 use ark_gb::compute_gb;
-use ark_gb::monomial::MonoTerm;
-use ark_gb::ordering::DegRevLex;
+use ark_gb::monomial::{GrevLexTerm, MonoTerm, Monomial};
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 
-fn mk_ring(nvars: u32) -> Arc<Ring<Fr, DegRevLex>> {
-    Arc::new(Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap())
+fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
+    Arc::new(Ring::<Fr>::new(nvars).unwrap())
 }
 
-fn mono(r: &Ring<Fr, DegRevLex>, e: &[u32]) -> MonoTerm {
-    MonoTerm::from_exponents(r, e).unwrap()
+fn mono(r: &Ring<Fr>, e: &[u32]) -> GrevLexTerm {
+    GrevLexTerm::from(MonoTerm::from_exponents(r, e).unwrap())
 }
 
 /// Render one polynomial as a Singular-ish string using the supplied
 /// variable names. Good enough for human inspection; not a parser-
 /// compatible round-trip (see the fixture parser in the tests for
 /// that).
-fn poly_to_string(p: &Poly<Fr>, ring: &Ring<Fr, DegRevLex>, var_names: &[&str]) -> String {
+fn poly_to_string(p: &Poly<Fr>, ring: &Ring<Fr>, var_names: &[&str]) -> String {
     if p.is_zero() {
         return "0".to_string();
     }
@@ -80,12 +79,7 @@ fn poly_to_string(p: &Poly<Fr>, ring: &Ring<Fr, DegRevLex>, var_names: &[&str]) 
     out
 }
 
-fn run_cyclic(
-    ring: Arc<Ring<Fr, DegRevLex>>,
-    name: &str,
-    input: Vec<Poly<Fr>>,
-    var_names: &[&str],
-) {
+fn run_cyclic(ring: Arc<Ring<Fr>>, name: &str, input: Vec<Poly<Fr>>, var_names: &[&str]) {
     println!("=== {} ===", name);
     let t = Instant::now();
     let gb = compute_gb(Arc::clone(&ring), input);

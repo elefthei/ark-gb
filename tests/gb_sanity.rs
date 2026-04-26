@@ -13,13 +13,12 @@ use std::sync::Arc;
 use ark_bls12_381::Fr;
 use ark_ff::One;
 use ark_gb::compute_gb;
-use ark_gb::monomial::MonoTerm;
-use ark_gb::ordering::DegRevLex;
+use ark_gb::monomial::{GrevLexTerm, MonoTerm, Monomial};
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 
-fn mono(ring: &Ring<Fr, DegRevLex>, exps: &[u32]) -> MonoTerm {
-    MonoTerm::from_exponents(ring, exps).unwrap()
+fn mono(ring: &Ring<Fr>, exps: &[u32]) -> GrevLexTerm {
+    GrevLexTerm::from(MonoTerm::from_exponents(ring, exps).unwrap())
 }
 
 /// `compute_gb` of `[x - 1, x - 2]` over `Fr[x]` must reduce to
@@ -27,15 +26,15 @@ fn mono(ring: &Ring<Fr, DegRevLex>, exps: &[u32]) -> MonoTerm {
 /// the constant `1`, after which everything reduces to zero.
 #[test]
 fn coprime_linears_collapse_to_unit_ideal() {
-    let ring = Arc::new(Ring::<Fr, DegRevLex>::new(1, DegRevLex).unwrap());
-    let f1 = Poly::from_terms(
+    let ring = Arc::new(Ring::<Fr>::new(1).unwrap());
+    let f1 = Poly::<Fr, GrevLexTerm>::from_terms(
         &ring,
         vec![
             (Fr::one(), mono(&ring, &[1])),
             (-Fr::one(), mono(&ring, &[0])),
         ],
     );
-    let f2 = Poly::from_terms(
+    let f2 = Poly::<Fr, GrevLexTerm>::from_terms(
         &ring,
         vec![
             (Fr::one(), mono(&ring, &[1])),
@@ -64,15 +63,15 @@ fn coprime_linears_collapse_to_unit_ideal() {
 /// generators (after auto-reduction + monic) are `x` and `y`.
 #[test]
 fn linear_two_var_gb_is_x_y() {
-    let ring = Arc::new(Ring::<Fr, DegRevLex>::new(2, DegRevLex).unwrap());
-    let f1 = Poly::from_terms(
+    let ring = Arc::new(Ring::<Fr>::new(2).unwrap());
+    let f1 = Poly::<Fr, GrevLexTerm>::from_terms(
         &ring,
         vec![
             (Fr::one(), mono(&ring, &[1, 0])),
             (Fr::one(), mono(&ring, &[0, 1])),
         ],
     );
-    let f2 = Poly::from_terms(
+    let f2 = Poly::<Fr, GrevLexTerm>::from_terms(
         &ring,
         vec![
             (Fr::one(), mono(&ring, &[1, 0])),
@@ -105,8 +104,8 @@ fn linear_two_var_gb_is_x_y() {
 /// itself: a single generator forms its own (already reduced) GB.
 #[test]
 fn singleton_xy_minus_1_is_self_gb() {
-    let ring = Arc::new(Ring::<Fr, DegRevLex>::new(2, DegRevLex).unwrap());
-    let f = Poly::from_terms(
+    let ring = Arc::new(Ring::<Fr>::new(2).unwrap());
+    let f = Poly::<Fr, GrevLexTerm>::from_terms(
         &ring,
         vec![
             (Fr::one(), mono(&ring, &[1, 1])),

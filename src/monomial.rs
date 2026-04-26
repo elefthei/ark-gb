@@ -1,81 +1,9 @@
-//! Packed-exponent monomials.
+//! Packed-exponent monomials and the `Monomial<F>` trait.
 //!
-//! A [`MonoTerm`] represents `x_0^{e_0} * x_1^{e_1} * ... * x_{n-1}^{e_{n-1}}`
-//! for a ring with `nvars = n`. Exponents are packed into four `u64`
-//! words — 32 bytes total — at 8 bytes per slot, of which the low 7
-//! bits hold the exponent (max value 127) and bit 7 is reserved as an
-//! overflow guard. See `~/ark_gb/docs/design-decisions.md` ADR-005 for
-//! the rationale; in short: this matches Singular's `p_LmExpVectorAddIsOk`
-//! divmask trick (a single AND-and-test per word detects per-byte
-//! overflow on the result of a packed-word add) and FLINT's flat
-//! `mpoly_monomial_add`.
-//!
-//! ## Packing (degrevlex, 7 bits/var + guard)
-//!
-//! ```text
-//! word 3 (MSB) : [ byte31 | byte30 | byte29 | ... | byte24 ]
-//! word 2       : [ byte23 | byte22 | ....................  ]
-//! word 1       : [ byte15 | byte14 | ....................  ]
-//! word 0 (LSB) : [  byte7 |  byte6 | ....................  ]
-//! ```
-//!
-//! Byte 31 holds `min(total_deg, 255)` (the "capped" total degree —
-//! 8 bits, no guard, since this byte is rewritten cleanly after every
-//! mul rather than incremented in place). Bytes 30..(31 - nvars) hold
-//! the **direct** exponent of the variables: variable `nvars - 1` at
-//! byte `30`, variable `nvars - 2` at byte `29`, ..., variable `0` at
-//! byte `31 - nvars`. In each variable byte, bits 0-6 hold the
-//! exponent and bit 7 is the overflow guard (always 0 in a canonical
-//! monomial). Bytes below `31 - nvars` are always zero.
-//!
-//! ## Multiplication and overflow detection
-//!
-//! `MonoTerm::mul` is a plain word-wise wrapping-add of the four
-//! packed words (LLVM auto-vectorises this into one `vpaddq`). Because
-//! each variable byte's value is ≤ 127, byte-wise sums fit in 8 bits
-//! and no carry can propagate from one variable byte into the next —
-//! the word-add is byte-isolated for the purposes of correctness.
-//! Overflow is detected by examining the guard bits of the result
-//! word: `(a + b) & ring.overflow_mask` is nonzero iff some byte's
-//! sum exceeded 127 (and either set bit 7 of that byte itself, or
-//! would have carried further but had nowhere to go).
-//!
-//! ## Comparison
-//!
-//! Degrevlex compare is still a lex compare of the four packed words
-//! MSB first, but with each word XOR'd against `ring.cmp_flip_mask`
-//! before the compare. The mask has `0x7F` in each variable byte slot
-//! and `0x00` in the total-degree byte, so:
-//!
-//! * Top byte (total-deg cap) compares directly: larger byte wins,
-//!   matching degrevlex's primary "higher total degree wins".
-//! * Variable bytes: `e ^ 0x7F = 127 - e` (since bit 7 is always 0
-//!   in canonical form). Larger `e` becomes smaller after XOR, so
-//!   smaller exponent wins the byte compare — matching degrevlex's
-//!   tie-break rule "smaller exponent at the largest-index differing
-//!   variable wins".
-//!
-//! Caveat: total degrees that exceed 255 saturate the top byte. When
-//! either operand's cap is saturated, `cmp_degrevlex` falls back on
-//! the cached `total_deg: u32` first, then on the variable bytes
-//! through the same XOR-flipped compare.
-//!
-//! ## Caches
-//!
-//! * `sev` (short exponent vector): a 64-bit bloom filter with bit
-//!   `i mod 64` set iff `e_i > 0`. Used by the bba sweep as a
-//!   divisibility pre-filter.
-//! * `total_deg`: sum of exponents, not capped.
-//! * `component`: always 0 today. Reserved for future module support.
-//!
-//! Reference: mathicgb `MonoMonoid.hpp`, Singular's `p_ExpVectorAdd` /
-//! `p_LmExpVectorAddIsOk`, and FLINT's `mpoly_monomial_add`.
-//! Algorithms re-derived, not copied. See ADR-005 for the
-//! Singular/FLINT comparison and the rationale for the 7+1 layout.
+//! See original module docs for the packing layout.
 
 use crate::field::Field;
-use crate::ordering::MonoOrder;
-use crate::ring::{BITS_PER_VAR, Ring, RingData};
+use crate::ring::{BITS_PER_VAR, Ring};
 use std::cmp::Ordering;
 use std::hash::Hash;
 
@@ -84,45 +12,59 @@ pub const WORDS_PER_MONO: usize = 4;
 
 const _BITS_PER_VAR_IS_8: () = assert!(BITS_PER_VAR == 8);
 
-/// Data-operations trait for monomials.
+/// Const flip mask for degrevlex on the full 31-variable space.
+const DEGREVLEX_FLIP: [u64; 4] = [
+    0x7F7F_7F7F_7F7F_7F7F,
+    0x7F7F_7F7F_7F7F_7F7F,
+    0x7F7F_7F7F_7F7F_7F7F,
+    0x007F_7F7F_7F7F_7F7F,
+];
+
+/// The `Monomial<F>` trait: order-aware monomial abstraction.
 ///
-/// The methods here are order-independent (they operate on exponent
-/// vectors); ordering-dependent comparison lives in
-/// [`crate::ordering::MonoOrder::cmp`] which dispatches back through
-/// `cmp_degrevlex` / `cmp_elim`.
+/// Implementors provide an `Ord` impl that pins the monomial order.
 pub trait Monomial<F: Field + Copy + Send + Sync>:
-    Sized + Copy + Send + Sync + std::fmt::Debug + PartialEq + Eq + Hash
+    Sized + Copy + Send + Sync + std::fmt::Debug + PartialEq + Eq + std::hash::Hash + Ord
 {
     /// The identity monomial (all exponents zero).
-    fn one(ring: &RingData<F>) -> Self;
+    fn one(ring: &Ring<F>) -> Self;
     /// Build a monomial from an exponent slice of length `ring.nvars()`.
-    fn from_exponents(ring: &RingData<F>, exps: &[u32]) -> Option<Self>;
+    fn from_exponents(ring: &Ring<F>, exps: &[u32]) -> Option<Self>;
     /// Exponent of variable `i`. Returns `None` if `i >= ring.nvars()`.
-    fn exponent(&self, ring: &RingData<F>, i: u32) -> Option<u32>;
+    fn exponent(&self, ring: &Ring<F>, i: u32) -> Option<u32>;
     /// Copy the exponent vector into a `Vec<u32>`.
-    fn exponents(&self, ring: &RingData<F>) -> Vec<u32>;
+    fn exponents(&self, ring: &Ring<F>) -> Vec<u32>;
+    /// Total degree.
+    fn total_deg(&self, ring: &Ring<F>) -> u32;
     /// Multiply two monomials.
-    fn mul(&self, other: &Self, ring: &RingData<F>) -> Self;
+    fn mul(&self, other: &Self, ring: &Ring<F>) -> Self;
     /// `true` iff `self | other` (each `e_i(self) ≤ e_i(other)`).
-    fn divides(&self, other: &Self, ring: &RingData<F>) -> bool;
+    fn divides(&self, other: &Self, ring: &Ring<F>) -> bool;
     /// Divide. Precondition `other.divides(self)`; returns `None` otherwise.
-    fn div(&self, other: &Self, ring: &RingData<F>) -> Option<Self>;
+    fn div(&self, other: &Self, ring: &Ring<F>) -> Option<Self>;
     /// Componentwise maximum (least common multiple of monomials).
-    fn lcm(&self, other: &Self, ring: &RingData<F>) -> Self;
-    /// Degrevlex comparison.
-    fn cmp_degrevlex(&self, other: &Self, ring: &RingData<F>) -> Ordering;
-    /// Block elimination comparison.
-    fn cmp_elim(&self, other: &Self, ring: &RingData<F>, split: usize) -> Ordering;
+    fn lcm(&self, other: &Self, ring: &Ring<F>) -> Self;
+    /// Access the underlying `MonoTerm`.
+    fn as_mono_term(&self) -> &MonoTerm;
+
+    /// Short exponent vector (ring-independent).
+    #[inline]
+    fn sev(&self) -> u64 {
+        self.as_mono_term().sev()
+    }
+
+    /// Cached total degree (ring-independent).
+    #[inline]
+    fn raw_total_deg(&self) -> u32 {
+        self.as_mono_term().total_deg()
+    }
 }
 
 /// Packed-exponent monomial. See module documentation for layout.
 ///
-/// `Send + Sync`: only owns integer arrays.
-/// `Copy`: the struct is 48 bytes of plain old data (4×u64 + u64 +
-/// 2×u32). Making it `Copy` lets the compiler treat assignments and
-/// passes-by-value as memcpy, which is what `derive(Clone)` boiled
-/// down to anyway. Hot paths like `Poly::sub_mul_term`'s two-pointer
-/// merge avoid surfacing `clone()` calls in profiles.
+/// `MonoTerm` is a pure data carrier — no `Ord` impl. The monomial
+/// order is pinned by the newtype wrappers (`GrevLexTerm`,
+/// `OddElimTerm`) via their `Ord` impls.
 #[derive(Clone, Copy, Debug)]
 pub struct MonoTerm {
     /// Four u64 words; word 3 is most significant.
@@ -132,19 +74,17 @@ pub struct MonoTerm {
     /// True total degree, uncapped.
     total_deg: u32,
     /// Component index. Always 0 today.
-    component: u32,
+    component: u16,
+    /// Number of variables in the parent ring (cached for ringless comparisons).
+    nvars: u16,
 }
 
 impl MonoTerm {
     // ----- Construction -----
 
     /// Build a monomial from an exponent slice of length `ring.nvars()`.
-    ///
-    /// Returns `None` if the length is wrong, any exponent exceeds
-    /// [`crate::ring::MAX_VAR_EXP`] (= 127, the 7-bit per-variable
-    /// limit), or the total degree exceeds `u32::MAX`.
     pub fn from_exponents<F: Field + Copy + Send + Sync>(
-        ring: &RingData<F>,
+        ring: &Ring<F>,
         exps: &[u32],
     ) -> Option<Self> {
         let n = ring.nvars() as usize;
@@ -166,16 +106,11 @@ impl MonoTerm {
             if e > 0 {
                 sev |= 1u64 << (i % 64);
             }
-            // Direct storage: the byte is the exponent itself, in
-            // bits 0-6. Bit 7 (the overflow guard) stays clear in
-            // canonical form. A zero exponent leaves the byte at 0,
-            // which is the natural reading.
             let byte_idx = byte_index_for_var(n, i);
             let (word, shift) = split_byte_index(byte_idx);
             packed[word] |= (e as u64) << shift;
         }
 
-        // Top byte: capped total degree (full 8 bits, no guard).
         let capped = total.min(u8::MAX as u64);
         packed[WORDS_PER_MONO - 1] |= capped << 56;
 
@@ -188,11 +123,12 @@ impl MonoTerm {
             sev,
             total_deg: total as u32,
             component: 0,
+            nvars: n as u16,
         })
     }
 
     /// The identity monomial (all exponents zero).
-    pub fn one<F: Field + Copy + Send + Sync>(ring: &RingData<F>) -> Self {
+    pub fn one<F: Field + Copy + Send + Sync>(ring: &Ring<F>) -> Self {
         let zeros = vec![0u32; ring.nvars() as usize];
         Self::from_exponents(ring, &zeros).expect("identity monomial fits trivially")
     }
@@ -214,27 +150,17 @@ impl MonoTerm {
     /// Component index. Always 0 in this bootstrap.
     #[inline]
     pub fn component(&self) -> u32 {
-        self.component
+        self.component as u32
     }
 
     /// Borrow the packed exponent block (4 × u64 = 32 bytes).
-    /// Layout per the module documentation: byte 31 = capped
-    /// total degree, bytes [31-nvars, 30] = direct exponents
-    /// (per ADR-005), low bytes always zero.
-    ///
-    /// Used by [`crate::reducer`] (ADR-008) to construct heap
-    /// `cmp_key`s by XOR'ing against the ring's `cmp_flip_mask`.
     #[inline]
     pub fn packed(&self) -> &[u64; 4] {
         &self.packed
     }
 
     /// Exponent of variable `i`. Returns `None` if `i >= ring.nvars()`.
-    pub fn exponent<F: Field + Copy + Send + Sync>(
-        &self,
-        ring: &RingData<F>,
-        i: u32,
-    ) -> Option<u32> {
+    pub fn exponent<F: Field + Copy + Send + Sync>(&self, ring: &Ring<F>, i: u32) -> Option<u32> {
         if i >= ring.nvars() {
             return None;
         }
@@ -245,13 +171,11 @@ impl MonoTerm {
     fn exponent_raw(&self, nvars: usize, i: usize) -> u32 {
         let byte_idx = byte_index_for_var(nvars, i);
         let (word, shift) = split_byte_index(byte_idx);
-        // Direct storage: bits 0-6 hold the exponent; bit 7 is the
-        // (always-zero in canonical form) overflow guard, masked off.
         ((self.packed[word] >> shift) & 0x7F) as u32
     }
 
     /// Copy the exponent vector into a `Vec<u32>`.
-    pub fn exponents<F: Field + Copy + Send + Sync>(&self, ring: &RingData<F>) -> Vec<u32> {
+    pub fn exponents<F: Field + Copy + Send + Sync>(&self, ring: &Ring<F>) -> Vec<u32> {
         let n = ring.nvars() as usize;
         (0..n).map(|i| self.exponent_raw(n, i)).collect()
     }
@@ -259,39 +183,9 @@ impl MonoTerm {
     // ----- Arithmetic -----
 
     /// Multiply two monomials.
-    ///
-    /// **Contract (ADR-018, implementing ADR-017 Option 2):** the
-    /// caller's ring construction is responsible for ensuring that
-    /// no product arising in the intended computation overflows a
-    /// per-variable byte or the u32 total-degree cache. Release
-    /// builds do not check; they match Singular's
-    /// `p_ExpVectorAdd` / `p_MemAdd_LengthGeneral` contract
-    /// (`~/Singular/libpolys/polys/monomials/p_polys.h:1432`, where
-    /// the overflow guard is gated on `PDEBUG ≥ 1`).
-    ///
-    /// Debug builds catch an overflow via `debug_assert!` on the
-    /// guard-bit divmask and on the u32 total-degree sum, mirroring
-    /// Singular's `pAssume1` checks.
-    ///
-    /// Implementation per ADR-005, with the codegen-motivated split
-    /// in ADR-017: the word-wise wrapping-add is emitted as an
-    /// explicit 4-element array literal (so LLVM sees four
-    /// independent reads+writes with no loop structure and, under
-    /// `-C target-cpu=native` on an AVX2 host, folds the four u64
-    /// adds into one `vpaddq ymm`). The top byte (total-degree cap)
-    /// is rewritten cleanly from the cached u32 total rather than
-    /// relying on the wrap-add result.
-    pub fn mul<F: Field + Copy + Send + Sync>(&self, other: &Self, ring: &RingData<F>) -> Self {
-        // The explicit unroll below assumes exactly four words; if
-        // WORDS_PER_MONO ever changes, update the literal.
+    pub fn mul<F: Field + Copy + Send + Sync>(&self, other: &Self, ring: &Ring<F>) -> Self {
         const _: () = assert!(WORDS_PER_MONO == 4);
 
-        // Word-wise add. Explicit 4-element literal so LLVM sees
-        // four independent reads+writes; overflow within a variable
-        // byte sets the guard bit (bit 7) of that byte, no carry can
-        // propagate to the neighbouring byte because both inputs are
-        // ≤ 127 in their low 7 bits and bit 7 is always 0 in canonical
-        // form, so each byte sum is ≤ 254 — always fits in 8 bits.
         let mut packed: [u64; WORDS_PER_MONO] = [
             self.packed[0].wrapping_add(other.packed[0]),
             self.packed[1].wrapping_add(other.packed[1]),
@@ -299,11 +193,6 @@ impl MonoTerm {
             self.packed[3].wrapping_add(other.packed[3]),
         ];
 
-        // Debug-only overflow check. In release, this is elided
-        // entirely (matching Singular's PDEBUG-gated pAssume1 /
-        // the bare p_MemAdd_LengthGeneral release path). The mask
-        // zeroes the total-degree byte, so a wrapped top byte does
-        // not trigger a false positive here.
         if cfg!(debug_assertions) {
             let m = ring.overflow_mask();
             let ovf =
@@ -319,17 +208,11 @@ impl MonoTerm {
             );
         }
 
-        // Total degree (uncapped, exact via the cached u32 sum).
-        // Release: wrapping_add is safe because we're below u32::MAX
-        // by contract. Debug: debug_assert! above already caught it.
         let total = self.total_deg.wrapping_add(other.total_deg);
-        // Rewrite the top byte: clear the wrap-add result and write
-        // the actual cap.
         let capped = (total as u64).min(u8::MAX as u64);
         packed[WORDS_PER_MONO - 1] =
             (packed[WORDS_PER_MONO - 1] & !(0xFFu64 << 56)) | (capped << 56);
 
-        // SEV update: e_new > 0 iff e_a > 0 OR e_b > 0; so OR the sevs.
         let sev = self.sev | other.sev;
 
         Self {
@@ -337,22 +220,17 @@ impl MonoTerm {
             sev,
             total_deg: total,
             component: 0,
+            nvars: self.nvars,
         }
     }
 
     /// `true` iff `self | other` (each `e_i(self) ≤ e_i(other)`).
-    ///
-    /// With direct exponent storage (ADR-005), this is a per-byte
-    /// `≤` test. Implemented byte-by-byte over the variable bytes;
-    /// could be SIMD'd later if it shows up in a profile.
-    pub fn divides<F: Field + Copy + Send + Sync>(&self, other: &Self, ring: &RingData<F>) -> bool {
+    pub fn divides<F: Field + Copy + Send + Sync>(&self, other: &Self, ring: &Ring<F>) -> bool {
         let n = ring.nvars() as usize;
-        let first_var_byte = (WORDS_PER_MONO * 8 - 1) - n; // = 31 - n
-        let last_var_byte = WORDS_PER_MONO * 8 - 2; // 30
+        let first_var_byte = (WORDS_PER_MONO * 8 - 1) - n;
+        let last_var_byte = WORDS_PER_MONO * 8 - 2;
         for byte_idx in first_var_byte..=last_var_byte {
             let (word, shift) = split_byte_index(byte_idx);
-            // Mask to 0x7F to ignore the (always-zero in canonical
-            // form) guard bit. Direct storage: byte value == exponent.
             let ea = (self.packed[word] >> shift) & 0x7F;
             let eb = (other.packed[word] >> shift) & 0x7F;
             if ea > eb {
@@ -362,17 +240,8 @@ impl MonoTerm {
         true
     }
 
-    /// Divide. Precondition `other.divides(self)`; returns `None`
-    /// otherwise.
-    ///
-    /// With direct storage, the per-byte op is `e_new = e_self - e_other`,
-    /// rejecting when `e_other > e_self`. Per-byte loop maintained for
-    /// the same reason as `divides`.
-    pub fn div<F: Field + Copy + Send + Sync>(
-        &self,
-        other: &Self,
-        ring: &RingData<F>,
-    ) -> Option<Self> {
+    /// Divide. Precondition `other.divides(self)`; returns `None` otherwise.
+    pub fn div<F: Field + Copy + Send + Sync>(&self, other: &Self, ring: &Ring<F>) -> Option<Self> {
         let n = ring.nvars() as usize;
         let first_var_byte = (WORDS_PER_MONO * 8 - 1) - n;
         let last_var_byte = WORDS_PER_MONO * 8 - 2;
@@ -388,13 +257,10 @@ impl MonoTerm {
             let new_e = ea - eb;
             packed[word] |= new_e << shift;
             if new_e > 0 {
-                // Recover variable index from byte position:
-                // var i has byte index `i + 31 - n`, so `i = byte - 31 + n`.
                 let var_i = byte_idx + n - (WORDS_PER_MONO * 8 - 1);
                 sev |= 1u64 << (var_i % 64);
             }
         }
-        // Total degree: self.total_deg - other.total_deg.
         if other.total_deg > self.total_deg {
             return None;
         }
@@ -406,86 +272,66 @@ impl MonoTerm {
             sev,
             total_deg: total,
             component: 0,
+            nvars: self.nvars,
         })
     }
 
     /// Componentwise maximum (least common multiple of monomials).
-    pub fn lcm<F: Field + Copy + Send + Sync>(&self, other: &Self, ring: &RingData<F>) -> Self {
+    pub fn lcm<F: Field + Copy + Send + Sync>(&self, other: &Self, ring: &Ring<F>) -> Self {
         let n = ring.nvars() as usize;
         let mut exps = vec![0u32; n];
         for (i, slot) in exps.iter_mut().enumerate() {
             *slot = self.exponent_raw(n, i).max(other.exponent_raw(n, i));
         }
-        // Each per-var exponent stays ≤ MAX_VAR_EXP (127); total fits u32.
         Self::from_exponents(ring, &exps).expect("lcm per-var exponents ≤ MAX_VAR_EXP")
     }
 
-    // ----- Ordering -----
+    // ----- Ordering helpers (pub(crate)) -----
 
-    /// Compare under the ring's ordering.
-    pub fn cmp<F: Field + Copy + Send + Sync, O: MonoOrder>(
-        &self,
-        other: &Self,
-        ring: &Ring<F, O>,
-    ) -> Ordering {
-        ring.cmp(self, other)
+    /// Degrevlex comparison using the CONST flip mask.
+    pub(crate) fn cmp_degrevlex_packed(&self, other: &Self) -> Ordering {
+        let a_cap = (self.packed[WORDS_PER_MONO - 1] >> 56) & 0xFF;
+        let b_cap = (other.packed[WORDS_PER_MONO - 1] >> 56) & 0xFF;
+        let saturated = a_cap == u8::MAX as u64 || b_cap == u8::MAX as u64;
+
+        if saturated {
+            match self.total_deg.cmp(&other.total_deg) {
+                Ordering::Equal => {}
+                ord => return ord,
+            }
+            for i in (0..WORDS_PER_MONO - 1).rev() {
+                let av = self.packed[i] ^ DEGREVLEX_FLIP[i];
+                let bv = other.packed[i] ^ DEGREVLEX_FLIP[i];
+                match av.cmp(&bv) {
+                    Ordering::Equal => {}
+                    ord => return ord,
+                }
+            }
+            let lo_mask = (1u64 << 56) - 1;
+            let av_top =
+                (self.packed[WORDS_PER_MONO - 1] ^ DEGREVLEX_FLIP[WORDS_PER_MONO - 1]) & lo_mask;
+            let bv_top =
+                (other.packed[WORDS_PER_MONO - 1] ^ DEGREVLEX_FLIP[WORDS_PER_MONO - 1]) & lo_mask;
+            return av_top.cmp(&bv_top);
+        }
+
+        for i in (0..WORDS_PER_MONO).rev() {
+            let av = self.packed[i] ^ DEGREVLEX_FLIP[i];
+            let bv = other.packed[i] ^ DEGREVLEX_FLIP[i];
+            match av.cmp(&bv) {
+                Ordering::Equal => {}
+                ord => return ord,
+            }
+        }
+        Ordering::Equal
     }
 
-    /// Block elimination order: compare block-weight on variables
-    /// `0 .. split`, then fall back on degrevlex for ties.
-    ///
-    /// The block weight is computed by summing the per-variable
-    /// exponent bytes through `exponent_raw`. This is `O(split)`
-    /// per compare, vs `O(1)` for `cmp_degrevlex`'s 4-word lex
-    /// scan, so `Elim` is slower than `DegRevLex` on hot paths.
-    /// Acceptable for the elimination use case where the user
-    /// has already opted out of the fast graded path.
-    pub fn cmp_elim<F: Field + Copy + Send + Sync>(
+    /// Degrevlex comparison using the ring's dynamic flip mask.
+    #[allow(dead_code)]
+    pub(crate) fn cmp_degrevlex<F: Field + Copy + Send + Sync>(
         &self,
         other: &Self,
-        ring: &RingData<F>,
-        split: usize,
-    ) -> Ordering {
-        let n = ring.nvars() as usize;
-        // Block weight = sum of exponents in vars 0 .. split.
-        // With split <= nvars <= 31 and per-var exponent <= 127,
-        // the sum fits in u32 trivially.
-        let mut wa: u32 = 0;
-        let mut wb: u32 = 0;
-        for i in 0..split {
-            wa += self.exponent_raw(n, i);
-            wb += other.exponent_raw(n, i);
-        }
-        match wa.cmp(&wb) {
-            Ordering::Equal => {}
-            ord => return ord,
-        }
-        self.cmp_degrevlex(other, ring)
-    }
-
-    /// Degrevlex comparison.
-    ///
-    /// With direct exponent storage (ADR-005) the lex order of the raw
-    /// packed words would compare variable bytes the wrong way (larger
-    /// exponent = greater), so we XOR each word against
-    /// `ring.cmp_flip_mask` first. The mask is `0x7F` in each variable
-    /// byte slot and `0x00` in the total-degree byte and unused bytes,
-    /// so:
-    /// * Top byte (capped total-deg) compares directly: larger byte
-    ///   wins (degrevlex's primary "higher total degree" rule).
-    /// * Variable bytes after XOR: `127 - e`. Smaller `e` becomes
-    ///   greater after the flip, matching degrevlex's tie-break
-    ///   "smaller exponent at the largest-index differing variable
-    ///   wins".
-    ///
-    /// Saturation fallback: when either operand's capped top byte is
-    /// 255, the cap byte is uninformative; we fall back on the cached
-    /// `total_deg: u32` first, then on the variable bytes through the
-    /// same XOR-flipped compare.
-    pub fn cmp_degrevlex<F: Field + Copy + Send + Sync>(
-        &self,
-        other: &Self,
-        ring: &RingData<F>,
+        ring: &Ring<F>,
     ) -> Ordering {
         let a_cap = (self.packed[WORDS_PER_MONO - 1] >> 56) & 0xFF;
         let b_cap = (other.packed[WORDS_PER_MONO - 1] >> 56) & 0xFF;
@@ -497,10 +343,6 @@ impl MonoTerm {
                 Ordering::Equal => {}
                 ord => return ord,
             }
-            // Equal (uncapped) total degrees: compare the lower three
-            // words via the flip mask, then the low 56 bits of the top
-            // word (also via the flip mask, which has the top byte
-            // zeroed).
             for i in (0..WORDS_PER_MONO - 1).rev() {
                 let av = self.packed[i] ^ mask[i];
                 let bv = other.packed[i] ^ mask[i];
@@ -515,8 +357,6 @@ impl MonoTerm {
             return av_top.cmp(&bv_top);
         }
 
-        // Fast path: lex compare of all four words via the flip mask,
-        // MSB first.
         for i in (0..WORDS_PER_MONO).rev() {
             let av = self.packed[i] ^ mask[i];
             let bv = other.packed[i] ^ mask[i];
@@ -528,11 +368,36 @@ impl MonoTerm {
         Ordering::Equal
     }
 
+    /// Block elimination comparison with a closure deciding which vars are in the elim block.
+    pub(crate) fn cmp_elim_packed(
+        &self,
+        other: &Self,
+        eliminate: impl Fn(usize) -> bool,
+    ) -> Ordering {
+        let n = self.nvars as usize;
+        let mut wa: u32 = 0;
+        let mut wb: u32 = 0;
+        for i in 0..n {
+            if eliminate(i) {
+                let byte_idx = byte_index_for_var(n, i);
+                let (word, shift) = split_byte_index(byte_idx);
+                let ea = ((self.packed[word] >> shift) & 0x7F) as u32;
+                let eb = ((other.packed[word] >> shift) & 0x7F) as u32;
+                wa += ea;
+                wb += eb;
+            }
+        }
+        match wa.cmp(&wb) {
+            Ordering::Equal => {}
+            ord => return ord,
+        }
+        self.cmp_degrevlex_packed(other)
+    }
+
     // ----- Invariants -----
 
-    /// Panic if any internal invariant is violated. Intended for
-    /// `debug_assert!` guards and for tests.
-    pub fn assert_canonical<F: Field + Copy + Send + Sync>(&self, ring: &RingData<F>) {
+    /// Panic if any internal invariant is violated.
+    pub fn assert_canonical<F: Field + Copy + Send + Sync>(&self, ring: &Ring<F>) {
         let n = ring.nvars() as usize;
         let mut total: u64 = 0;
         let mut sev: u64 = 0;
@@ -550,14 +415,11 @@ impl MonoTerm {
             }
         }
 
-        // Guard bits must all be zero in canonical form.
         for word in 0..WORDS_PER_MONO {
             assert_eq!(
                 self.packed[word] & ring.overflow_mask()[word],
                 0,
-                "overflow guard bit set in word {word} (packed = {:#018x}, mask = {:#018x})",
-                self.packed[word],
-                ring.overflow_mask()[word]
+                "overflow guard bit set in word {word}"
             );
         }
 
@@ -565,20 +427,15 @@ impl MonoTerm {
         assert_eq!(total as u32, self.total_deg, "total_deg cache mismatch");
         assert_eq!(sev, self.sev, "sev cache mismatch");
 
-        // Top byte is min(total, 255).
         let expected_cap = total.min(u8::MAX as u64);
         let cap = (self.packed[WORDS_PER_MONO - 1] >> 56) & 0xFF;
         assert_eq!(cap, expected_cap, "top-byte total-degree cap mismatch");
 
-        // Bytes outside the [31-n, 30] range (the variable bytes) plus
-        // bits outside those byte slots in the top word must be zero.
-        // Rather than reason byte-by-byte, reconstruct the expected
-        // packed block from exponents and compare.
         let expected = Self::from_exponents(ring, &self.exponents(ring))
             .expect("re-canonicalising from our own exponents must succeed");
         assert_eq!(
             self.packed, expected.packed,
-            "packed representation differs from canonical re-build"
+            "packed differs from canonical"
         );
 
         assert_eq!(self.component, 0, "non-zero component not yet supported");
@@ -599,70 +456,146 @@ impl Hash for MonoTerm {
     }
 }
 
-// ----- Monomial<F> impl for MonoTerm -----
+// ----- Newtypes -----
 
-impl<F: Field + Copy + Send + Sync> Monomial<F> for MonoTerm {
+/// Graded reverse lexicographic order.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GrevLexTerm(pub(crate) MonoTerm);
+
+/// Elimination order: odd-indexed variables form the elimination block.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct OddElimTerm(pub(crate) MonoTerm);
+
+impl From<MonoTerm> for GrevLexTerm {
+    fn from(t: MonoTerm) -> Self {
+        GrevLexTerm(t)
+    }
+}
+impl From<MonoTerm> for OddElimTerm {
+    fn from(t: MonoTerm) -> Self {
+        OddElimTerm(t)
+    }
+}
+
+impl Ord for GrevLexTerm {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.cmp_degrevlex_packed(&other.0)
+    }
+}
+impl PartialOrd for GrevLexTerm {
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
+}
+
+impl Ord for OddElimTerm {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.cmp_elim_packed(&other.0, |idx| idx % 2 == 1)
+    }
+}
+impl PartialOrd for OddElimTerm {
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
+}
+
+// ----- Monomial<F> impls -----
+
+impl<F: Field + Copy + Send + Sync> Monomial<F> for GrevLexTerm {
     #[inline]
-    fn one(ring: &RingData<F>) -> Self {
-        MonoTerm::one(ring)
+    fn one(ring: &Ring<F>) -> Self {
+        Self(MonoTerm::one(ring))
     }
     #[inline]
-    fn from_exponents(ring: &RingData<F>, exps: &[u32]) -> Option<Self> {
-        MonoTerm::from_exponents(ring, exps)
+    fn from_exponents(ring: &Ring<F>, exps: &[u32]) -> Option<Self> {
+        MonoTerm::from_exponents(ring, exps).map(Self)
     }
     #[inline]
-    fn exponent(&self, ring: &RingData<F>, i: u32) -> Option<u32> {
-        MonoTerm::exponent(self, ring, i)
+    fn exponent(&self, ring: &Ring<F>, i: u32) -> Option<u32> {
+        self.0.exponent(ring, i)
     }
     #[inline]
-    fn exponents(&self, ring: &RingData<F>) -> Vec<u32> {
-        MonoTerm::exponents(self, ring)
+    fn exponents(&self, ring: &Ring<F>) -> Vec<u32> {
+        self.0.exponents(ring)
     }
     #[inline]
-    fn mul(&self, other: &Self, ring: &RingData<F>) -> Self {
-        MonoTerm::mul(self, other, ring)
+    fn total_deg(&self, _ring: &Ring<F>) -> u32 {
+        self.0.total_deg
     }
     #[inline]
-    fn divides(&self, other: &Self, ring: &RingData<F>) -> bool {
-        MonoTerm::divides(self, other, ring)
+    fn mul(&self, other: &Self, ring: &Ring<F>) -> Self {
+        Self(self.0.mul(&other.0, ring))
     }
     #[inline]
-    fn div(&self, other: &Self, ring: &RingData<F>) -> Option<Self> {
-        MonoTerm::div(self, other, ring)
+    fn divides(&self, other: &Self, ring: &Ring<F>) -> bool {
+        self.0.divides(&other.0, ring)
     }
     #[inline]
-    fn lcm(&self, other: &Self, ring: &RingData<F>) -> Self {
-        MonoTerm::lcm(self, other, ring)
+    fn div(&self, other: &Self, ring: &Ring<F>) -> Option<Self> {
+        self.0.div(&other.0, ring).map(Self)
     }
     #[inline]
-    fn cmp_degrevlex(&self, other: &Self, ring: &RingData<F>) -> Ordering {
-        MonoTerm::cmp_degrevlex(self, other, ring)
+    fn lcm(&self, other: &Self, ring: &Ring<F>) -> Self {
+        Self(self.0.lcm(&other.0, ring))
     }
     #[inline]
-    fn cmp_elim(&self, other: &Self, ring: &RingData<F>, split: usize) -> Ordering {
-        MonoTerm::cmp_elim(self, other, ring, split)
+    fn as_mono_term(&self) -> &MonoTerm {
+        &self.0
+    }
+}
+
+impl<F: Field + Copy + Send + Sync> Monomial<F> for OddElimTerm {
+    #[inline]
+    fn one(ring: &Ring<F>) -> Self {
+        Self(MonoTerm::one(ring))
+    }
+    #[inline]
+    fn from_exponents(ring: &Ring<F>, exps: &[u32]) -> Option<Self> {
+        MonoTerm::from_exponents(ring, exps).map(Self)
+    }
+    #[inline]
+    fn exponent(&self, ring: &Ring<F>, i: u32) -> Option<u32> {
+        self.0.exponent(ring, i)
+    }
+    #[inline]
+    fn exponents(&self, ring: &Ring<F>) -> Vec<u32> {
+        self.0.exponents(ring)
+    }
+    #[inline]
+    fn total_deg(&self, _ring: &Ring<F>) -> u32 {
+        self.0.total_deg
+    }
+    #[inline]
+    fn mul(&self, other: &Self, ring: &Ring<F>) -> Self {
+        Self(self.0.mul(&other.0, ring))
+    }
+    #[inline]
+    fn divides(&self, other: &Self, ring: &Ring<F>) -> bool {
+        self.0.divides(&other.0, ring)
+    }
+    #[inline]
+    fn div(&self, other: &Self, ring: &Ring<F>) -> Option<Self> {
+        self.0.div(&other.0, ring).map(Self)
+    }
+    #[inline]
+    fn lcm(&self, other: &Self, ring: &Ring<F>) -> Self {
+        Self(self.0.lcm(&other.0, ring))
+    }
+    #[inline]
+    fn as_mono_term(&self) -> &MonoTerm {
+        &self.0
     }
 }
 
 // ----- packing helpers -----
 
 /// Byte index of variable `i` in the 32-byte packed block.
-///
-/// Placement (for `nvars = n`):
-///
-/// * Byte 31: total-degree cap.
-/// * Byte 30: variable `n - 1` (the highest-index variable, most
-///   significant in degrevlex tie-break).
-/// * Byte 29: variable `n - 2`.
-/// * ...
-/// * Byte `31 - n`: variable `0`.
-/// * Bytes `0 .. 31 - n`: unused, always zero.
-///
-/// So `byte_index_for_var(n, i) = 31 - (n - i) = i + 31 - n`.
 #[inline]
 fn byte_index_for_var(nvars: usize, i: usize) -> usize {
     debug_assert!(i < nvars);
-    debug_assert!(nvars < WORDS_PER_MONO * 8); // at least one byte for total_deg
+    debug_assert!(nvars < WORDS_PER_MONO * 8);
     i + (WORDS_PER_MONO * 8 - 1) - nvars
 }
 
@@ -678,11 +611,10 @@ fn split_byte_index(byte_idx: usize) -> (usize, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ordering::DegRevLex;
     use ark_bls12_381::Fr;
 
-    fn mk_ring(nvars: u32) -> Ring<Fr, DegRevLex> {
-        Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap()
+    fn mk_ring(nvars: u32) -> Ring<Fr> {
+        Ring::<Fr>::new(nvars).unwrap()
     }
 
     #[test]
@@ -706,7 +638,6 @@ mod tests {
 
     #[test]
     fn from_exponents_rejects_above_max_var_exp() {
-        // ADR-005: per-variable exponents are 7-bit, max 127.
         let r = mk_ring(3);
         assert!(MonoTerm::from_exponents(&r, &[127, 0, 0]).is_some());
         assert!(MonoTerm::from_exponents(&r, &[128, 0, 0]).is_none());
@@ -716,10 +647,6 @@ mod tests {
 
     #[test]
     fn mul_within_budget_succeeds() {
-        // ADR-018 (implementing ADR-017 Option 2): per-mul overflow
-        // is a debug-build invariant, not a release-time check.
-        // Verify the happy-path boundary: 63 + 64 = 127 is the
-        // largest per-variable sum that stays in the 7-bit budget.
         let r = mk_ring(4);
         let a = MonoTerm::from_exponents(&r, &[63, 0, 0, 0]).unwrap();
         let b = MonoTerm::from_exponents(&r, &[64, 0, 0, 0]).unwrap();
@@ -728,16 +655,11 @@ mod tests {
         assert_eq!(p.exponent(&r, 0).unwrap(), 127);
     }
 
-    /// ADR-018: release builds do not detect overflow. The hot-path
-    /// `mul` contract is "caller's ring construction must keep all
-    /// products in-range"; debug builds help catch violations via
-    /// `debug_assert!`, and this test confirms that guard fires.
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "MonoTerm::mul overflow")]
     fn mul_debug_asserts_on_per_byte_overflow() {
         let r = mk_ring(4);
-        // 100 + 50 = 150 > 127: overflow on var 1.
         let a = MonoTerm::from_exponents(&r, &[1, 100, 0, 0]).unwrap();
         let b = MonoTerm::from_exponents(&r, &[1, 50, 0, 0]).unwrap();
         let _ = a.mul(&b, &r);
@@ -748,7 +670,6 @@ mod tests {
     #[should_panic(expected = "MonoTerm::mul overflow")]
     fn mul_debug_asserts_on_exact_guard_bit_trip() {
         let r = mk_ring(4);
-        // 64 + 64 = 128: smallest possible overflow (sets guard bit exactly).
         let a = MonoTerm::from_exponents(&r, &[64, 0, 0, 0]).unwrap();
         let b = MonoTerm::from_exponents(&r, &[64, 0, 0, 0]).unwrap();
         let _ = a.mul(&b, &r);
@@ -756,24 +677,13 @@ mod tests {
 
     #[test]
     fn mul_no_carry_propagation_between_neighbouring_bytes() {
-        // The whole point of the guard bit (and the ≤127 invariant)
-        // is that a per-byte sum can never exceed 254, so it cannot
-        // carry into the next byte and corrupt a neighbour. Verify
-        // that two non-overflowing sums in adjacent variables both
-        // come out correctly.
         let r = mk_ring(5);
         let a = MonoTerm::from_exponents(&r, &[60, 70, 80, 90, 100]).unwrap();
         let b = MonoTerm::from_exponents(&r, &[60, 50, 40, 30, 20]).unwrap();
-        // Per-var sums: 120, 120, 120, 120, 120 — all ≤127, no
-        // overflow on any byte.
         let p = a.mul(&b, &r);
         p.assert_canonical(&r);
         for i in 0..5 {
-            assert_eq!(
-                p.exponent(&r, i).unwrap(),
-                120,
-                "exponent of var {i} corrupted by neighbour byte"
-            );
+            assert_eq!(p.exponent(&r, i).unwrap(), 120);
         }
         assert_eq!(p.total_deg(), 600);
     }
@@ -817,74 +727,80 @@ mod tests {
     #[test]
     fn degrevlex_cmp_basic() {
         let r = mk_ring(3);
-        let x2 = MonoTerm::from_exponents(&r, &[2, 0, 0]).unwrap();
-        let xy = MonoTerm::from_exponents(&r, &[1, 1, 0]).unwrap();
-        let y2 = MonoTerm::from_exponents(&r, &[0, 2, 0]).unwrap();
-        let xz = MonoTerm::from_exponents(&r, &[1, 0, 1]).unwrap();
-        let yz = MonoTerm::from_exponents(&r, &[0, 1, 1]).unwrap();
-        let z2 = MonoTerm::from_exponents(&r, &[0, 0, 2]).unwrap();
-
-        // Standard degrevlex ordering for 3 variables at total degree 2:
-        // x^2 > x*y > y^2 > x*z > y*z > z^2
-        assert_eq!(x2.cmp(&xy, &r), Ordering::Greater);
-        assert_eq!(xy.cmp(&y2, &r), Ordering::Greater);
-        assert_eq!(y2.cmp(&xz, &r), Ordering::Greater);
-        assert_eq!(xz.cmp(&yz, &r), Ordering::Greater);
-        assert_eq!(yz.cmp(&z2, &r), Ordering::Greater);
+        let x2 = GrevLexTerm::from_exponents(&r, &[2, 0, 0]).unwrap();
+        let xy = GrevLexTerm::from_exponents(&r, &[1, 1, 0]).unwrap();
+        let y2 = GrevLexTerm::from_exponents(&r, &[0, 2, 0]).unwrap();
+        let xz = GrevLexTerm::from_exponents(&r, &[1, 0, 1]).unwrap();
+        let yz = GrevLexTerm::from_exponents(&r, &[0, 1, 1]).unwrap();
+        let z2 = GrevLexTerm::from_exponents(&r, &[0, 0, 2]).unwrap();
+        assert_eq!(x2.cmp(&xy), Ordering::Greater);
+        assert_eq!(xy.cmp(&y2), Ordering::Greater);
+        assert_eq!(y2.cmp(&xz), Ordering::Greater);
+        assert_eq!(xz.cmp(&yz), Ordering::Greater);
+        assert_eq!(yz.cmp(&z2), Ordering::Greater);
     }
 
     #[test]
     fn degrevlex_cmp_by_total_deg() {
         let r = mk_ring(3);
-        let a = MonoTerm::from_exponents(&r, &[3, 0, 0]).unwrap();
-        let b = MonoTerm::from_exponents(&r, &[0, 0, 2]).unwrap();
-        assert_eq!(a.cmp(&b, &r), Ordering::Greater);
+        let a = GrevLexTerm::from_exponents(&r, &[3, 0, 0]).unwrap();
+        let b = GrevLexTerm::from_exponents(&r, &[0, 0, 2]).unwrap();
+        assert_eq!(a.cmp(&b), Ordering::Greater);
     }
 
     #[test]
     fn degrevlex_cmp_equal() {
         let r = mk_ring(4);
-        let a = MonoTerm::from_exponents(&r, &[1, 2, 3, 4]).unwrap();
-        let b = MonoTerm::from_exponents(&r, &[1, 2, 3, 4]).unwrap();
-        assert_eq!(a.cmp(&b, &r), Ordering::Equal);
+        let a = GrevLexTerm::from_exponents(&r, &[1, 2, 3, 4]).unwrap();
+        let b = GrevLexTerm::from_exponents(&r, &[1, 2, 3, 4]).unwrap();
+        assert_eq!(a.cmp(&b), Ordering::Equal);
     }
 
     #[test]
     fn large_total_deg_cap_still_orders_correctly() {
-        // With 7-bit-per-var packing (ADR-005), per-variable max is
-        // 127. Use nvars = 3 so total_deg can still saturate the
-        // 8-bit top-byte cap (>255): 127 + 127 + 50 = 304.
         let r = mk_ring(3);
-        let a = MonoTerm::from_exponents(&r, &[127, 50, 127]).unwrap();
-        let b = MonoTerm::from_exponents(&r, &[50, 127, 127]).unwrap();
-        // Total degrees are equal (304). Largest index with differing
-        // exponent is 1: a_1 = 50, b_1 = 127. Smaller exponent at
-        // largest differing index wins degrevlex, so a > b.
-        assert_eq!(a.cmp(&b, &r), Ordering::Greater);
+        let a = GrevLexTerm::from_exponents(&r, &[127, 50, 127]).unwrap();
+        let b = GrevLexTerm::from_exponents(&r, &[50, 127, 127]).unwrap();
+        assert_eq!(a.cmp(&b), Ordering::Greater);
     }
 
     #[test]
     fn degrevlex_tiebreak_on_last_variable() {
-        // Classic Cox-Little-O'Shea example: for nvars=3,
-        // total deg 3, we want x*y*z < x^2*z. Actually let's test the
-        // canonical example: x*y^2 > y^3 > x*y*z > y^2*z > x*z^2 > y*z^2 > z^3.
         let r = mk_ring(3);
-        let xy2 = MonoTerm::from_exponents(&r, &[1, 2, 0]).unwrap();
-        let y3 = MonoTerm::from_exponents(&r, &[0, 3, 0]).unwrap();
-        let xyz = MonoTerm::from_exponents(&r, &[1, 1, 1]).unwrap();
-        let y2z = MonoTerm::from_exponents(&r, &[0, 2, 1]).unwrap();
-        let xz2 = MonoTerm::from_exponents(&r, &[1, 0, 2]).unwrap();
-        let yz2 = MonoTerm::from_exponents(&r, &[0, 1, 2]).unwrap();
-        let z3 = MonoTerm::from_exponents(&r, &[0, 0, 3]).unwrap();
+        let xy2 = GrevLexTerm::from_exponents(&r, &[1, 2, 0]).unwrap();
+        let y3 = GrevLexTerm::from_exponents(&r, &[0, 3, 0]).unwrap();
+        let xyz = GrevLexTerm::from_exponents(&r, &[1, 1, 1]).unwrap();
+        let y2z = GrevLexTerm::from_exponents(&r, &[0, 2, 1]).unwrap();
+        let xz2 = GrevLexTerm::from_exponents(&r, &[1, 0, 2]).unwrap();
+        let yz2 = GrevLexTerm::from_exponents(&r, &[0, 1, 2]).unwrap();
+        let z3 = GrevLexTerm::from_exponents(&r, &[0, 0, 3]).unwrap();
         let sequence = [&xy2, &y3, &xyz, &y2z, &xz2, &yz2, &z3];
         for w in sequence.windows(2) {
-            let ord = w[0].cmp(w[1], &r);
+            assert_eq!(w[0].cmp(w[1]), Ordering::Greater);
+        }
+    }
+
+    #[test]
+    fn cmp_degrevlex_packed_agrees_with_ring_based() {
+        let r = mk_ring(3);
+        let pairs: Vec<([u32; 3], [u32; 3])> = vec![
+            ([0, 0, 0], [1, 0, 0]),
+            ([1, 0, 0], [0, 1, 0]),
+            ([2, 0, 0], [1, 1, 0]),
+            ([1, 1, 0], [0, 2, 0]),
+            ([1, 0, 1], [0, 1, 1]),
+            ([3, 0, 0], [0, 0, 2]),
+            ([127, 50, 127], [50, 127, 127]),
+        ];
+        for (a_exp, b_exp) in &pairs {
+            let a = MonoTerm::from_exponents(&r, a_exp).unwrap();
+            let b = MonoTerm::from_exponents(&r, b_exp).unwrap();
+            let packed = a.cmp_degrevlex_packed(&b);
+            let ring_based = a.cmp_degrevlex(&b, &r);
             assert_eq!(
-                ord,
-                Ordering::Greater,
-                "{:?} should be > {:?}",
-                w[0].exponents(&r),
-                w[1].exponents(&r)
+                packed, ring_based,
+                "disagreement for {:?} vs {:?}",
+                a_exp, b_exp
             );
         }
     }

@@ -33,8 +33,7 @@
 //! retirement of the geobucket reducer.
 
 use crate::field::Field;
-use crate::monomial::MonoTerm;
-use crate::ordering::MonoOrder;
+use crate::monomial::{MonoTerm, Monomial};
 use crate::poly::{Poly, PolyCursor};
 use crate::ring::Ring;
 use std::collections::BinaryHeap;
@@ -58,10 +57,10 @@ use std::sync::Arc;
 /// lifetime `'a` ties the heap to the borrow of that basis for
 /// the duration of one reduction.
 #[derive(Debug)]
-pub struct Reducer<'a, F: Field + Copy> {
+pub struct Reducer<'a, F: Field + Copy, M: Monomial<F>> {
     /// Source polynomial `g_i`. Borrowed from the basis for
     /// the reduction's lifetime.
-    pub poly: &'a Poly<F>,
+    pub poly: &'a Poly<F, M>,
     /// Multiplier monomial `m_i = lm(LObject) / lm(g_i)` at the
     /// time this reducer was added.
     pub multiplier: MonoTerm,
@@ -81,7 +80,7 @@ pub struct Reducer<'a, F: Field + Copy> {
     /// Using a cursor instead of a random-access index makes the
     /// reducer oblivious to `Poly`'s backing storage (parallel
     /// vectors vs. linked list).
-    pub cursor: PolyCursor<'a, F>,
+    pub cursor: PolyCursor<'a, F, M>,
     /// Sugar contribution: `g_i.lm_deg() + multiplier.total_deg()`.
     /// Used to compute the LObject's running sugar as the
     /// max over all in-flight reducers (plus the initial sugar).
@@ -156,15 +155,15 @@ impl Ord for HeapNode {
 /// Lifetime `'a` ties this state to the borrow of the
 /// [`SBasis`] whose polynomials the [`Reducer`]s reference.
 #[derive(Debug)]
-pub struct ReducerHeap<'a, F: Field + Copy + Send + Sync, O: MonoOrder> {
+pub struct ReducerHeap<'a, F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>> {
     /// Owning ring reference. All monomials in the heap belong
     /// to this ring.
-    ring: Arc<Ring<F, O>>,
+    ring: Arc<Ring<F>>,
     /// Slab of in-flight reducers. Indexed by [`HeapNode::reducer_idx`].
     /// Grows monotonically — a reducer is never removed from the
     /// slab once added (its tail may be exhausted, in which case
     /// no `HeapNode` references it any more, but its slot stays).
-    reducers: Vec<Reducer<'a, F>>,
+    reducers: Vec<Reducer<'a, F, M>>,
     /// Max-heap of pending product terms, ordered by degrevlex
     /// via [`HeapNode::cmp_key`]. The std-library `BinaryHeap` is
     /// a max-heap and our [`HeapNode::cmp`] implements degrevlex
@@ -176,12 +175,12 @@ pub struct ReducerHeap<'a, F: Field + Copy + Send + Sync, O: MonoOrder> {
     sugar: u32,
 }
 
-impl<'a, F: Field + Copy + Send + Sync, O: MonoOrder> ReducerHeap<'a, F, O> {
+impl<'a, F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>> ReducerHeap<'a, F, M> {
     /// Construct an empty reducer state for a reduction starting
     /// at `initial_sugar`. Adding the LObject's polynomial as the
     /// first reducer (with `multiplier = 1`, `coeff = 1`) is the
     /// caller's responsibility (deferred to phase 4).
-    pub fn new(ring: Arc<Ring<F, O>>, initial_sugar: u32) -> Self {
+    pub fn new(ring: Arc<Ring<F>>, initial_sugar: u32) -> Self {
         Self {
             ring,
             reducers: Vec::new(),
@@ -192,7 +191,7 @@ impl<'a, F: Field + Copy + Send + Sync, O: MonoOrder> ReducerHeap<'a, F, O> {
 
     /// Borrow the ring this heap operates over.
     #[inline]
-    pub fn ring(&self) -> &Arc<Ring<F, O>> {
+    pub fn ring(&self) -> &Arc<Ring<F>> {
         &self.ring
     }
 
@@ -282,7 +281,7 @@ impl<'a, F: Field + Copy + Send + Sync, O: MonoOrder> ReducerHeap<'a, F, O> {
     /// reducer" invariant: an exhausted reducer has zero in flight.
     ///
     /// Updates the running sugar to `max(self.sugar, reducer.sugar)`.
-    pub fn push_reducer(&mut self, reducer: Reducer<'a, F>) -> usize {
+    pub fn push_reducer(&mut self, reducer: Reducer<'a, F, M>) -> usize {
         let idx = self.reducers.len();
         self.sugar = self.sugar.max(reducer.sugar);
         self.reducers.push(reducer);
@@ -304,7 +303,7 @@ impl<'a, F: Field + Copy + Send + Sync, O: MonoOrder> ReducerHeap<'a, F, O> {
         let Some((_c, m)) = r.cursor.term() else {
             return;
         };
-        let term_mono = r.multiplier.mul(m, &self.ring);
+        let term_mono = r.multiplier.mul(m.as_mono_term(), &self.ring);
         let mask = self.ring.cmp_flip_mask();
         let cmp_key = std::array::from_fn(|i| term_mono.packed()[i] ^ mask[i]);
         self.heap.push(HeapNode {
@@ -344,11 +343,11 @@ impl<'a, F: Field + Copy + Send + Sync, O: MonoOrder> ReducerHeap<'a, F, O> {
     /// to zero. `final_sugar` is the running sugar after all
     /// reducers were added, useful for the caller to update the
     /// LObject's sugar metadata.
-    pub fn reduce_to_normal_form<DF>(mut self, mut find_divisor: DF) -> (Poly<F>, u32)
+    pub fn reduce_to_normal_form<DF>(mut self, mut find_divisor: DF) -> (Poly<F, M>, u32)
     where
-        DF: FnMut(&MonoTerm) -> Option<(&'a Poly<F>, u32)>,
+        DF: FnMut(&MonoTerm) -> Option<(&'a Poly<F, M>, u32)>,
     {
-        let mut survivor_terms: Vec<(F, MonoTerm)> = Vec::new();
+        let mut survivor_terms: Vec<(F, M)> = Vec::new();
 
         while let Some((c, m)) = self.pop_with_cancellation() {
             match find_divisor(&m) {
@@ -358,7 +357,7 @@ impl<'a, F: Field + Copy + Send + Sync, O: MonoOrder> ReducerHeap<'a, F, O> {
                         .expect("find_divisor returned non-zero divisor")
                         .1;
                     let multiplier = m
-                        .div(g_lm, &self.ring)
+                        .div(g_lm.as_mono_term(), &self.ring)
                         .expect("find_divisor's contract: lm(g) divides m");
                     debug_assert_eq!(g.lm_coeff(), F::one(), "basis polynomials must be monic");
                     let coeff = -c;
@@ -397,7 +396,7 @@ impl<'a, F: Field + Copy + Send + Sync, O: MonoOrder> ReducerHeap<'a, F, O> {
                 }
                 None => {
                     // Irreducible leader: emit into the survivor.
-                    survivor_terms.push((c, m));
+                    survivor_terms.push((c, M::from(m)));
                 }
             }
         }
@@ -437,7 +436,7 @@ impl<'a, F: Field + Copy + Send + Sync, O: MonoOrder> ReducerHeap<'a, F, O> {
             // so unpacking could get us back, but reading through the
             // cursor is simpler and works on both Poly backends.
             let (r_c, r_m) = r.cursor.term().expect("just pushed; live cursor");
-            let mono = r.multiplier.mul(r_m, &self.ring);
+            let mono = r.multiplier.mul(r_m.as_mono_term(), &self.ring);
             let mut total_coeff = r.coeff * r_c;
 
             // Advance the max contributor.
@@ -474,18 +473,18 @@ impl<'a, F: Field + Copy + Send + Sync, O: MonoOrder> ReducerHeap<'a, F, O> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ordering::DegRevLex;
+    use crate::monomial::{GrevLexTerm, MonoTerm};
     use ark_bls12_381::Fr;
     use ark_ff::One;
 
-    fn mk_ring(nvars: u32) -> Arc<Ring<Fr, DegRevLex>> {
-        Arc::new(Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap())
+    fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
+        Arc::new(Ring::<Fr>::new(nvars).unwrap())
     }
 
     #[test]
     fn empty_reducer_heap_constructs() {
         let r = mk_ring(3);
-        let h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
+        let h = ReducerHeap::<Fr, GrevLexTerm>::new(Arc::clone(&r), 0);
         assert_eq!(h.reducer_count(), 0);
         assert_eq!(h.heap_len(), 0);
         assert_eq!(h.sugar(), 0);
@@ -494,7 +493,7 @@ mod tests {
     #[test]
     fn initial_sugar_is_preserved() {
         let r = mk_ring(3);
-        let h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 17);
+        let h = ReducerHeap::<Fr, GrevLexTerm>::new(Arc::clone(&r), 17);
         assert_eq!(h.sugar(), 17);
     }
 
@@ -597,7 +596,7 @@ mod tests {
     #[test]
     fn empty_heap_pop_and_peek_return_none() {
         let r = mk_ring(3);
-        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr, GrevLexTerm>::new(Arc::clone(&r), 0);
         assert!(h.heap_is_empty());
         assert!(h.peek_max().is_none());
         assert!(h.pop_max().is_none());
@@ -607,7 +606,7 @@ mod tests {
     #[test]
     fn push_then_pop_single_node() {
         let r = mk_ring(3);
-        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr, GrevLexTerm>::new(Arc::clone(&r), 0);
         let n = HeapNode {
             cmp_key: [1, 2, 3, 4],
             reducer_idx: 42,
@@ -636,7 +635,7 @@ mod tests {
         ] {
             for &n in &[1usize, 2, 5, 16, 64, 200] {
                 let nodes = pseudo_random_nodes(n, seed);
-                let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
+                let mut h = ReducerHeap::<Fr, GrevLexTerm>::new(Arc::clone(&r), 0);
                 for node in &nodes {
                     h.push_node(node.clone());
                 }
@@ -662,14 +661,14 @@ mod tests {
         // that the next pop_max returns.
         let r = mk_ring(3);
         let nodes = pseudo_random_nodes(50, 0xfeed_face);
-        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr, GrevLexTerm>::new(Arc::clone(&r), 0);
         for node in &nodes {
             h.push_node(node.clone());
             let peek_key = h.peek_max().unwrap().cmp_key;
             // Don't actually pop — instead, verify that on the
             // *next* pop later we'd see this key. Take a snapshot
             // by cloning the heap state for the check.
-            let mut h2 = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
+            let mut h2 = ReducerHeap::<Fr, GrevLexTerm>::new(Arc::clone(&r), 0);
             // Re-build h2 from the underlying BinaryHeap's iterator
             // to avoid moving h.
             for n2 in h.heap.iter() {
@@ -687,7 +686,7 @@ mod tests {
         // lifecycle that pop-with-cancellation will exercise).
         let r = mk_ring(3);
         let nodes = pseudo_random_nodes(30, 0xa1b2_c3d4);
-        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr, GrevLexTerm>::new(Arc::clone(&r), 0);
 
         // Push first 20.
         for n in &nodes[..20] {
@@ -716,17 +715,19 @@ mod tests {
 
     // ----- Phase 3: push_reducer + pop_with_cancellation -----
 
-    use crate::monomial::MonoTerm;
+    use crate::monomial::Monomial;
     use crate::poly::Poly;
 
-    fn mono(r: &Ring<Fr, DegRevLex>, e: &[u32]) -> MonoTerm {
-        MonoTerm::from_exponents(r, e).unwrap()
+    fn mono(r: &Ring<Fr>, e: &[u32]) -> GrevLexTerm {
+        GrevLexTerm::from(MonoTerm::from_exponents(r, e).unwrap())
     }
 
     /// Helper: collect the full output of pop_with_cancellation
     /// into a Vec until the heap drains. Used as a "drive the
     /// reducer to completion" pattern in tests.
-    fn drain_with_cancellation<'a>(h: &mut ReducerHeap<'a, Fr, DegRevLex>) -> Vec<(Fr, MonoTerm)> {
+    fn drain_with_cancellation<'a>(
+        h: &mut ReducerHeap<'a, Fr, GrevLexTerm>,
+    ) -> Vec<(Fr, MonoTerm)> {
         let mut out = Vec::new();
         while let Some(pair) = h.pop_with_cancellation() {
             out.push(pair);
@@ -749,7 +750,7 @@ mod tests {
                 (Fr::from(1u64), mono(&r, &[0, 0, 2])), // x_2^2
             ],
         );
-        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr, GrevLexTerm>::new(Arc::clone(&r), 0);
         h.push_reducer(Reducer {
             poly: &p,
             multiplier: one,
@@ -764,11 +765,11 @@ mod tests {
         // Terms emerge in descending degrevlex order — same as the
         // source polynomial's canonical order.
         assert_eq!(out[0].0, Fr::from(5u64));
-        assert_eq!(out[0].1, mono(&r, &[3, 0, 0]));
+        assert_eq!(out[0].1, mono(&r, &[3, 0, 0]).0);
         assert_eq!(out[1].0, Fr::from(2u64));
-        assert_eq!(out[1].1, mono(&r, &[1, 1, 0]));
+        assert_eq!(out[1].1, mono(&r, &[1, 1, 0]).0);
         assert_eq!(out[2].0, Fr::from(1u64));
-        assert_eq!(out[2].1, mono(&r, &[0, 0, 2]));
+        assert_eq!(out[2].1, mono(&r, &[0, 0, 2]).0);
     }
 
     #[test]
@@ -786,7 +787,7 @@ mod tests {
         let one = MonoTerm::one(&r);
         let neg_one = -Fr::one();
 
-        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr, GrevLexTerm>::new(Arc::clone(&r), 0);
         h.push_reducer(Reducer {
             poly: &p,
             multiplier: one,
@@ -830,7 +831,7 @@ mod tests {
             ],
         );
         let one = MonoTerm::one(&r);
-        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr, GrevLexTerm>::new(Arc::clone(&r), 0);
         h.push_reducer(Reducer {
             poly: &p,
             multiplier: one,
@@ -848,11 +849,11 @@ mod tests {
         let out = drain_with_cancellation(&mut h);
         assert_eq!(out.len(), 3);
         assert_eq!(out[0].0, Fr::from(7u64));
-        assert_eq!(out[0].1, mono(&r, &[2, 0, 0]));
+        assert_eq!(out[0].1, mono(&r, &[2, 0, 0]).0);
         assert_eq!(out[1].0, Fr::from(3u64));
-        assert_eq!(out[1].1, mono(&r, &[0, 1, 0]));
+        assert_eq!(out[1].1, mono(&r, &[0, 1, 0]).0);
         assert_eq!(out[2].0, Fr::from(7u64));
-        assert_eq!(out[2].1, mono(&r, &[0, 0, 1]));
+        assert_eq!(out[2].1, mono(&r, &[0, 0, 1]).0);
     }
 
     #[test]
@@ -891,11 +892,11 @@ mod tests {
 
             // Reference: Poly::add via the geobucket-friendly merge.
             let want = p.add(&q, &r);
-            let want_terms: Vec<(Fr, MonoTerm)> = want.iter().map(|(c, m)| (c, *m)).collect();
+            let want_terms: Vec<(Fr, MonoTerm)> = want.iter().map(|(c, m)| (c, m.0)).collect();
 
             // Heap reducer: 1*p + 1*q.
             let one = MonoTerm::one(&r);
-            let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
+            let mut h = ReducerHeap::<Fr, GrevLexTerm>::new(Arc::clone(&r), 0);
             h.push_reducer(Reducer {
                 poly: &p,
                 multiplier: one,
@@ -921,7 +922,7 @@ mod tests {
     /// Reference reduction using Poly::sub_mul_term in a loop.
     /// Equivalent to the heap reducer but algorithmically distinct;
     /// used as the property-test oracle.
-    fn reference_reduce(ring: &Ring<Fr, DegRevLex>, f: Poly<Fr>, basis: &[Poly<Fr>]) -> Poly<Fr> {
+    fn reference_reduce(ring: &Ring<Fr>, f: Poly<Fr>, basis: &[Poly<Fr>]) -> Poly<Fr> {
         let mut current = f;
         loop {
             if current.is_zero() {
@@ -938,7 +939,7 @@ mod tests {
                 // Irreducible leader: pop it off, recurse on the tail.
                 // Easier: just emit the head into a survivor and
                 // continue with the tail.
-                let mut survivor_terms: Vec<(Fr, MonoTerm)> = Vec::new();
+                let mut survivor_terms: Vec<(Fr, GrevLexTerm)> = Vec::new();
                 let mut working = current;
                 'outer: loop {
                     if working.is_zero() {
@@ -964,7 +965,7 @@ mod tests {
                     }
                 }
                 if survivor_terms.is_empty() {
-                    return Poly::zero();
+                    return Poly::<Fr, GrevLexTerm>::zero();
                 }
                 return Poly::from_descending_terms_unchecked(ring, survivor_terms);
             };
@@ -980,12 +981,12 @@ mod tests {
     /// Helper: run the heap reducer to normal form against a basis,
     /// using the same first-divisor-found policy as the reference.
     fn heap_reduce<'a>(
-        ring: Arc<Ring<Fr, DegRevLex>>,
+        ring: Arc<Ring<Fr>>,
         f: &'a Poly<Fr>,
         basis: &'a [Poly<Fr>],
         sugars: &[u32],
     ) -> Poly<Fr> {
-        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&ring), f.lm_deg());
+        let mut h = ReducerHeap::<Fr, GrevLexTerm>::new(Arc::clone(&ring), f.lm_deg());
         let one = MonoTerm::one(&ring);
         h.push_reducer(Reducer {
             poly: f,
@@ -1001,7 +1002,7 @@ mod tests {
                     continue;
                 }
                 let g_lm = g.leading().unwrap().1;
-                if g_lm.divides(leader, &ring) {
+                if g_lm.0.divides(leader, &ring) {
                     return Some((*g, sugars[idx]));
                 }
             }
@@ -1183,7 +1184,7 @@ mod tests {
         let r = mk_ring(2);
         let p = Poly::from_terms(&r, vec![(Fr::one(), mono(&r, &[1, 0]))]);
         let one = MonoTerm::one(&r);
-        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 7);
+        let mut h = ReducerHeap::<Fr, GrevLexTerm>::new(Arc::clone(&r), 7);
         assert_eq!(h.sugar(), 7);
         h.push_reducer(Reducer {
             poly: &p,
@@ -1211,7 +1212,7 @@ mod tests {
         // reducer_idx should both be poppable. Order between
         // them is unspecified, but neither should be lost.
         let r = mk_ring(3);
-        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr, GrevLexTerm>::new(Arc::clone(&r), 0);
         let a = HeapNode {
             cmp_key: [9, 0, 0, 0],
             reducer_idx: 1,

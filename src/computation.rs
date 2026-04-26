@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::field::Field;
 use crate::lset::LSet;
-use crate::ordering::MonoOrder;
+use crate::monomial::Monomial;
 use crate::poly::Poly;
 use crate::ring::Ring;
 
@@ -42,11 +42,14 @@ use crate::ring::Ring;
 ///   reallocates the `Arc<Poly>` slots, but the `Poly` bodies live
 ///   behind `Arc` so the pointers the `Arc`s wrap are stable).
 #[derive(Debug)]
-pub struct SharedSBasis<F: Field + Copy + Send + Sync> {
+pub struct SharedSBasis<
+    F: Field + Copy + Send + Sync,
+    M: Monomial<F> = crate::monomial::GrevLexTerm,
+> {
     /// The three parallel arrays, protected by a single RwLock. On
     /// read-heavy workloads (reduction inner loop) many readers
     /// coexist; append takes exclusive.
-    pub inner: RwLock<SharedSBasisInner<F>>,
+    pub inner: RwLock<SharedSBasisInner<F, M>>,
     /// Redundancy flags. One `AtomicBool` per basis element. Readers
     /// use `load(Relaxed)`; writers use `store(Relaxed)`. The length
     /// of this vector is synchronised with `inner` via the RwLock —
@@ -58,11 +61,14 @@ pub struct SharedSBasis<F: Field + Copy + Send + Sync> {
 
 /// The parallel arrays behind `SharedSBasis::inner`. Grouped so a
 /// single RwLock guards their consistency.
-#[derive(Debug, Default)]
-pub struct SharedSBasisInner<F: Field + Copy + Send + Sync> {
+#[derive(Debug)]
+pub struct SharedSBasisInner<
+    F: Field + Copy + Send + Sync,
+    M: Monomial<F> = crate::monomial::GrevLexTerm,
+> {
     /// Polynomials, owned via `Arc<Poly>` so a reader can clone-out
     /// a handle and drop the RwLock immediately.
-    pub polys: Vec<Arc<Poly<F>>>,
+    pub polys: Vec<Arc<Poly<F, M>>>,
     /// Leading short-exponent vectors.
     pub sevs: Vec<u64>,
     /// Leading total degrees.
@@ -71,7 +77,7 @@ pub struct SharedSBasisInner<F: Field + Copy + Send + Sync> {
     pub arrivals: Vec<u64>,
 }
 
-impl<F: Field + Copy + Send + Sync> SharedSBasis<F> {
+impl<F: Field + Copy + Send + Sync, M: Monomial<F>> SharedSBasis<F, M> {
     /// Empty basis.
     pub fn new() -> Self {
         Self {
@@ -99,7 +105,7 @@ impl<F: Field + Copy + Send + Sync> SharedSBasis<F> {
     /// Append `h` to the basis. Returns the index at which `h` was
     /// placed. Takes both write locks in a consistent order
     /// (`inner` first, `redundant` second) to avoid deadlock.
-    pub fn push(&self, h: Arc<Poly<F>>, arrival: u64) -> usize {
+    pub fn push(&self, h: Arc<Poly<F, M>>, arrival: u64) -> usize {
         let lm_sev = h.lm_sev();
         let lm_deg = h.lm_deg();
         let mut inner = self.inner.write().unwrap();
@@ -116,7 +122,7 @@ impl<F: Field + Copy + Send + Sync> SharedSBasis<F> {
     /// Read-only snapshot of `(polys, sevs, lm_degs)` up to
     /// `len`-many. The returned tuple holds the read guard for the
     /// lifetime of the borrow; drop it quickly.
-    pub fn read_snapshot(&self) -> std::sync::RwLockReadGuard<'_, SharedSBasisInner<F>> {
+    pub fn read_snapshot(&self) -> std::sync::RwLockReadGuard<'_, SharedSBasisInner<F, M>> {
         self.inner.read().unwrap()
     }
 
@@ -146,7 +152,7 @@ impl<F: Field + Copy + Send + Sync> SharedSBasis<F> {
     /// Clone-out an `Arc<Poly>` for index `idx`. Cheap (one atomic
     /// ref-count bump). Callers use this to hold a stable handle on
     /// a basis element after dropping the read lock.
-    pub fn poly(&self, idx: usize) -> Arc<Poly<F>> {
+    pub fn poly(&self, idx: usize) -> Arc<Poly<F, M>> {
         Arc::clone(&self.inner.read().unwrap().polys[idx])
     }
 
@@ -158,7 +164,7 @@ impl<F: Field + Copy + Send + Sync> SharedSBasis<F> {
     ///
     /// Takes an `inner` read-guard implicitly to walk the arrays.
     /// Writes redundancy flags via their atomics (no lock needed).
-    pub fn clear_redundant_for<O: MonoOrder>(&self, ring: &Ring<F, O>, idx: usize) {
+    pub fn clear_redundant_for(&self, ring: &Ring<F>, idx: usize) {
         let inner = self.inner.read().unwrap();
         let polys = &inner.polys;
         let sevs = &inner.sevs;
@@ -185,7 +191,7 @@ impl<F: Field + Copy + Send + Sync> SharedSBasis<F> {
     }
 }
 
-impl<F: Field + Copy + Send + Sync> Default for SharedSBasis<F> {
+impl<F: Field + Copy + Send + Sync, M: Monomial<F>> Default for SharedSBasis<F, M> {
     fn default() -> Self {
         Self::new()
     }
@@ -249,11 +255,11 @@ impl Default for SharedLSet {
 /// via `into_basis`, which unwraps the inner `Arc` (cheap because
 /// no worker is holding it any more).
 #[derive(Debug)]
-pub struct Computation<F: Field + Copy + Send + Sync, O: MonoOrder> {
+pub struct Computation<F: Field + Copy + Send + Sync, M: Monomial<F>> {
     /// The ring — immutable, shared by all workers.
-    pub ring: Arc<Ring<F, O>>,
+    pub ring: Arc<Ring<F>>,
     /// The growing basis.
-    pub basis: SharedSBasis<F>,
+    pub basis: SharedSBasis<F, M>,
     /// The pair queue.
     pub l_set: SharedLSet,
     /// Cancellation flag. Workers poll at cursor boundaries.
@@ -294,9 +300,9 @@ pub struct Computation<F: Field + Copy + Send + Sync, O: MonoOrder> {
     pub insert_mutex: Mutex<()>,
 }
 
-impl<F: Field + Copy + Send + Sync, O: MonoOrder> Computation<F, O> {
+impl<F: Field + Copy + Send + Sync, M: Monomial<F>> Computation<F, M> {
     /// Fresh computation.
-    pub fn new(ring: Arc<Ring<F, O>>) -> Self {
+    pub fn new(ring: Arc<Ring<F>>) -> Self {
         Self {
             ring,
             basis: SharedSBasis::new(),
@@ -339,31 +345,41 @@ impl<F: Field + Copy + Send + Sync, O: MonoOrder> Computation<F, O> {
     }
 }
 
+impl<F: Field + Copy + Send + Sync, M: Monomial<F>> Default for SharedSBasisInner<F, M> {
+    fn default() -> Self {
+        Self {
+            polys: Vec::new(),
+            sevs: Vec::new(),
+            lm_degs: Vec::new(),
+            arrivals: Vec::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::monomial::MonoTerm;
-    use crate::ordering::DegRevLex;
+    use crate::monomial::{GrevLexTerm, MonoTerm};
     use ark_bls12_381::Fr;
     use ark_ff::One;
 
-    fn mk_ring(nvars: u32) -> Arc<Ring<Fr, DegRevLex>> {
-        Arc::new(Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap())
+    fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
+        Arc::new(Ring::<Fr>::new(nvars).unwrap())
     }
 
     #[test]
     fn push_and_snapshot() {
         let r = mk_ring(3);
         let b = SharedSBasis::new();
-        let p1 = Arc::new(Poly::monomial(
+        let p1 = Arc::new(Poly::<Fr, GrevLexTerm>::monomial(
             &r,
             Fr::one(),
-            MonoTerm::from_exponents(&r, &[2, 0, 0]).unwrap(),
+            GrevLexTerm::from(MonoTerm::from_exponents(&r, &[2, 0, 0]).unwrap()),
         ));
-        let p2 = Arc::new(Poly::monomial(
+        let p2 = Arc::new(Poly::<Fr, GrevLexTerm>::monomial(
             &r,
             Fr::one(),
-            MonoTerm::from_exponents(&r, &[0, 1, 0]).unwrap(),
+            GrevLexTerm::from(MonoTerm::from_exponents(&r, &[0, 1, 0]).unwrap()),
         ));
         let i1 = b.push(p1, 0);
         let i2 = b.push(p2, 1);
@@ -378,10 +394,10 @@ mod tests {
     fn redundant_atomic() {
         let r = mk_ring(3);
         let b = SharedSBasis::new();
-        let p = Arc::new(Poly::monomial(
+        let p = Arc::new(Poly::<Fr, GrevLexTerm>::monomial(
             &r,
             Fr::one(),
-            MonoTerm::from_exponents(&r, &[1, 0, 0]).unwrap(),
+            GrevLexTerm::from(MonoTerm::from_exponents(&r, &[1, 0, 0]).unwrap()),
         ));
         b.push(p, 0);
         assert!(!b.is_redundant(0));
@@ -392,7 +408,7 @@ mod tests {
     #[test]
     fn cancel_flag_round_trips() {
         let r = mk_ring(3);
-        let c = Computation::new(r);
+        let c = Computation::<Fr, GrevLexTerm>::new(r);
         assert!(!c.is_cancelled());
         c.cancel();
         assert!(c.is_cancelled());
@@ -401,7 +417,7 @@ mod tests {
     #[test]
     fn alloc_arrivals_is_monotonic() {
         let r = mk_ring(3);
-        let c = Computation::new(r);
+        let c = Computation::<Fr, GrevLexTerm>::new(r);
         let a = c.alloc_one_arrival();
         let b = c.alloc_arrivals(3);
         let d = c.alloc_one_arrival();

@@ -6,7 +6,7 @@
 //! rationale behind keeping this second backend available.
 //!
 //! The shape here is close to Singular's `spolyrec` storage: each
-//! node owns a coefficient, a monomial, and a `NonNull<Node<F>>` pointing
+//! node owns a coefficient, a monomial, and a `NonNull<Node<F, M>>` pointing
 //! at the next node (or `None` at the tail). `drop_leading_in_place`
 //! is O(1) via a take-and-deallocate on the head slot. A custom
 //! [`Drop`] impl walks the chain iteratively so a million-term poly
@@ -30,8 +30,7 @@ use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 use crate::field::Field;
-use crate::monomial::MonoTerm;
-use crate::ordering::MonoOrder;
+use crate::monomial::Monomial;
 use crate::ring::Ring;
 
 use super::node_pool::{alloc, dealloc};
@@ -44,15 +43,15 @@ use super::node_pool::{alloc, dealloc};
 ///
 /// # `Send + Sync` safety
 ///
-/// `Poly` contains a raw [`NonNull<Node<F>>`], which is `!Send` and
+/// `Poly` contains a raw [`NonNull<Node<F, M>>`], which is `!Send` and
 /// `!Sync` by default. We manually opt in:
 ///
 /// * **`Send`**: a `Poly` can be moved to another thread because its
-///   `Node`s hold only POD data (`F = u32`, `MonoTerm`, another
+///   `Node`s hold only POD data (`F = u32`, `M`, another
 ///   raw pointer). The pool-owning thread distinction matters only
 ///   at allocation / deallocation time — reading the chain on a
 ///   different thread is sound.
-/// * **`Sync`**: a `&Poly<F>` can be shared across threads because all
+/// * **`Sync`**: a `&Poly<F, M>` can be shared across threads because all
 ///   read paths (`iter`, `cursor`, `leading`, field accessors) treat
 ///   the chain as immutable; no interior mutation happens behind a
 ///   shared reference.
@@ -73,9 +72,9 @@ use super::node_pool::{alloc, dealloc};
 /// If ark_gb's parallel story changes (`SINGULAR_THREADS>1`; cf.
 /// `~/Singular-parallel-bba`), the pool design has to be revisited;
 /// this is tracked as follow-up work in ADR-016.
-pub struct Poly<F: Field + Copy> {
+pub struct Poly<F: Field + Copy, M: Monomial<F> = crate::monomial::GrevLexTerm> {
     /// First node (the leading term), or `None` for the zero poly.
-    head: Option<NonNull<Node<F>>>,
+    head: Option<NonNull<Node<F, M>>>,
     /// Number of live nodes reachable from `head`. Maintained on
     /// every mutation so `len()` stays O(1).
     len: usize,
@@ -90,24 +89,24 @@ pub struct Poly<F: Field + Copy> {
 }
 
 // SAFETY: See the `Send + Sync` safety section on `Poly` above. The
-// inner `NonNull<Node<F>>` is the only reason these auto-traits don't
+// inner `NonNull<Node<F, M>>` is the only reason these auto-traits don't
 // apply automatically.
-unsafe impl<F: Field + Copy + Send> Send for Poly<F> {}
-unsafe impl<F: Field + Copy + Sync> Sync for Poly<F> {}
+unsafe impl<F: Field + Copy + Send, M: Monomial<F>> Send for Poly<F, M> {}
+unsafe impl<F: Field + Copy + Sync, M: Monomial<F>> Sync for Poly<F, M> {}
 
 /// One term's worth of storage in the linked list.
 ///
 /// `pub(super)` because [`super::node_pool`] constructs and destroys
 /// these through a thread-local allocator. The field layout is
 /// deliberate: `F` first (hot cache line for arithmetic), then
-/// `MonoTerm`, then the `next` pointer.
-pub(super) struct Node<F> {
+/// the monomial, then the `next` pointer.
+pub(super) struct Node<F, M> {
     pub(super) coeff: F,
-    pub(super) mono: MonoTerm,
-    pub(super) next: Option<NonNull<Node<F>>>,
+    pub(super) mono: M,
+    pub(super) next: Option<NonNull<Node<F, M>>>,
 }
 
-impl<F: Field + Copy + std::fmt::Debug> std::fmt::Debug for Poly<F> {
+impl<F: Field + Copy + std::fmt::Debug, M: Monomial<F>> std::fmt::Debug for Poly<F, M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut dbg = f.debug_struct("Poly");
         dbg.field("len", &self.len)
@@ -115,7 +114,7 @@ impl<F: Field + Copy + std::fmt::Debug> std::fmt::Debug for Poly<F> {
             .field("lm_sev", &self.lm_sev)
             .field("lm_deg", &self.lm_deg);
         // Walk and collect terms for debugging.
-        let mut terms: Vec<(F, &MonoTerm)> = Vec::with_capacity(self.len);
+        let mut terms: Vec<(F, &M)> = Vec::with_capacity(self.len);
         let mut node = self.head;
         while let Some(n) = node {
             // SAFETY: nodes reachable from `head` are live by the
@@ -128,7 +127,7 @@ impl<F: Field + Copy + std::fmt::Debug> std::fmt::Debug for Poly<F> {
     }
 }
 
-impl<F: Field + Copy> Drop for Poly<F> {
+impl<F: Field + Copy, M: Monomial<F>> Drop for Poly<F, M> {
     /// Iterative drop so a very long chain does not blow the stack.
     /// Every node is handed back to the thread-local [`POOL`]; the
     /// caller takes each node's `next` before releasing it so the
@@ -157,7 +156,7 @@ impl<F: Field + Copy> Drop for Poly<F> {
     }
 }
 
-impl<F: Field + Copy> Clone for Poly<F> {
+impl<F: Field + Copy, M: Monomial<F>> Clone for Poly<F, M> {
     /// Deep clone: walks the source chain, allocating fresh nodes
     /// through the pool. The sentinel-slot / tail-cursor pattern
     /// matches `merge_consuming` and friends so `Poly::clone` keeps
@@ -174,12 +173,12 @@ impl<F: Field + Copy> Clone for Poly<F> {
         // use immutable references through `NonNull::as_ref` on live
         // nodes reachable from `self.head`.
 
-        let mut head: Option<NonNull<Node<F>>> = None;
-        let mut tail: *mut Option<NonNull<Node<F>>> = &mut head;
+        let mut head: Option<NonNull<Node<F, M>>> = None;
+        let mut tail: *mut Option<NonNull<Node<F, M>>> = &mut head;
         let mut node = self.head;
         while let Some(n) = node {
             let n_ref = unsafe { n.as_ref() };
-            let fresh = alloc(n_ref.coeff, n_ref.mono.clone(), None);
+            let fresh = alloc(n_ref.coeff, n_ref.mono, None);
             unsafe {
                 *tail = Some(fresh);
                 tail = &mut (*fresh.as_ptr()).next;
@@ -197,7 +196,7 @@ impl<F: Field + Copy> Clone for Poly<F> {
     }
 }
 
-impl<F: Field + Copy> Poly<F> {
+impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     // ----- Constructors -----
 
     /// The zero polynomial.
@@ -214,13 +213,12 @@ impl<F: Field + Copy> Poly<F> {
 
     /// A polynomial with a single term `c * m`. Returns the zero
     /// polynomial if `c == 0`. `c` must already be reduced mod `p`.
-    pub fn monomial<O: MonoOrder>(ring: &Ring<F, O>, c: F, m: MonoTerm) -> Self {
-        let _ = ring;
+    pub fn monomial(_ring: &Ring<F>, c: F, m: M) -> Self {
         if c.is_zero() {
             return Self::zero();
         }
-        let lm_sev = m.sev();
-        let lm_deg = m.total_deg();
+        let lm_sev = m.as_mono_term().sev();
+        let lm_deg = m.as_mono_term().total_deg();
         let head = alloc(c, m, None);
         Self {
             head: Some(head),
@@ -236,10 +234,7 @@ impl<F: Field + Copy> Poly<F> {
     /// already in strictly-descending monomial order with no
     /// duplicates and no zero coefficients. See the `poly_vec`
     /// counterpart for the caller contract.
-    pub fn from_descending_terms_unchecked<O: MonoOrder>(
-        ring: &Ring<F, O>,
-        terms: Vec<(F, MonoTerm)>,
-    ) -> Self {
+    pub fn from_descending_terms_unchecked(_ring: &Ring<F>, terms: Vec<(F, M)>) -> Self {
         if terms.is_empty() {
             return Self::zero();
         }
@@ -247,16 +242,16 @@ impl<F: Field + Copy> Poly<F> {
 
         // Debug-only validation pass. Separate from the construction
         // pass because the borrow checker gets confused if we both
-        // hold `prev_mono: &MonoTerm` and append into the chain in the
+        // hold `prev_mono: &M` and append into the chain in the
         // same loop.
         #[cfg(debug_assertions)]
         {
-            let mut prev_mono: Option<&MonoTerm> = None;
+            let mut prev_mono: Option<&M> = None;
             for (c, m) in terms.iter() {
                 debug_assert!(!c.is_zero(), "from_descending_terms_unchecked: zero coeff");
                 if let Some(prev) = prev_mono {
                     debug_assert!(
-                        prev.cmp(m, ring).is_gt(),
+                        prev.cmp(m).is_gt(),
                         "from_descending_terms_unchecked: not strictly descending"
                     );
                 }
@@ -265,11 +260,11 @@ impl<F: Field + Copy> Poly<F> {
         }
 
         let lm_coeff = terms[0].0;
-        let lm_sev = terms[0].1.sev();
-        let lm_deg = terms[0].1.total_deg();
+        let lm_sev = terms[0].1.as_mono_term().sev();
+        let lm_deg = terms[0].1.as_mono_term().total_deg();
 
-        let mut head: Option<NonNull<Node<F>>> = None;
-        let mut tail: *mut Option<NonNull<Node<F>>> = &mut head;
+        let mut head: Option<NonNull<Node<F, M>>> = None;
+        let mut tail: *mut Option<NonNull<Node<F, M>>> = &mut head;
         for (c, m) in terms {
             let fresh = alloc(c, m, None);
             unsafe {
@@ -290,10 +285,10 @@ impl<F: Field + Copy> Poly<F> {
     /// Build from parallel vectors in descending order. Mirrors the
     /// `poly_vec` signature verbatim. Iterates both vectors once to
     /// chain up nodes.
-    pub fn from_descending_parallel_unchecked<O: MonoOrder>(
-        ring: &Ring<F, O>,
+    pub fn from_descending_parallel_unchecked(
+        _ring: &Ring<F>,
         coeffs: Vec<F>,
-        terms: Vec<MonoTerm>,
+        terms: Vec<M>,
     ) -> Self {
         debug_assert_eq!(coeffs.len(), terms.len());
         if terms.is_empty() {
@@ -305,17 +300,16 @@ impl<F: Field + Copy> Poly<F> {
                 debug_assert!(!c.is_zero());
             }
             for w in terms.windows(2) {
-                debug_assert!(w[0].cmp(&w[1], ring).is_gt());
+                debug_assert!(w[0].cmp(&w[1]).is_gt());
             }
         }
-        let _ = ring;
         let len = coeffs.len();
         let lm_coeff = coeffs[0];
-        let lm_sev = terms[0].sev();
-        let lm_deg = terms[0].total_deg();
+        let lm_sev = terms[0].as_mono_term().sev();
+        let lm_deg = terms[0].as_mono_term().total_deg();
 
-        let mut head: Option<NonNull<Node<F>>> = None;
-        let mut tail: *mut Option<NonNull<Node<F>>> = &mut head;
+        let mut head: Option<NonNull<Node<F, M>>> = None;
+        let mut tail: *mut Option<NonNull<Node<F, M>>> = &mut head;
         for (c, m) in coeffs.into_iter().zip(terms) {
             let fresh = alloc(c, m, None);
             unsafe {
@@ -335,15 +329,15 @@ impl<F: Field + Copy> Poly<F> {
 
     /// Build from unsorted terms. Sorts descending, de-dupes via sum,
     /// drops zeros. Semantics match `poly_vec::Poly::from_terms`.
-    pub fn from_terms<O: MonoOrder>(ring: &Ring<F, O>, terms: Vec<(F, MonoTerm)>) -> Self {
+    pub fn from_terms(ring: &Ring<F>, terms: Vec<(F, M)>) -> Self {
         let mut terms = terms;
-        terms.sort_by(|a, b| b.1.cmp(&a.1, ring));
+        terms.sort_by_key(|b| std::cmp::Reverse(b.1));
 
         // Normalise: merge adjacent equal monomials, reduce coeffs
         // mod p, drop zeros. We do this into a Vec first to keep the
         // merge logic straightforward, then chain the survivors into
         // the linked list.
-        let mut surviving: Vec<(F, MonoTerm)> = Vec::with_capacity(terms.len());
+        let mut surviving: Vec<(F, M)> = Vec::with_capacity(terms.len());
         for (c, m) in terms {
             if c.is_zero() {
                 continue;
@@ -351,7 +345,7 @@ impl<F: Field + Copy> Poly<F> {
             if let Some(last) = surviving.last_mut()
                 && last.1 == m
             {
-                last.0 = (last.0) + (c);
+                last.0 += c;
                 if last.0.is_zero() {
                     surviving.pop();
                 }
@@ -371,8 +365,8 @@ impl<F: Field + Copy> Poly<F> {
         if let Some(h) = self.head {
             // SAFETY: `h` points to a live leading node.
             let h_ref = unsafe { h.as_ref() };
-            self.lm_sev = h_ref.mono.sev();
-            self.lm_deg = h_ref.mono.total_deg();
+            self.lm_sev = h_ref.mono.as_mono_term().sev();
+            self.lm_deg = h_ref.mono.as_mono_term().total_deg();
             self.lm_coeff = h_ref.coeff;
         } else {
             self.lm_sev = 0;
@@ -397,7 +391,7 @@ impl<F: Field + Copy> Poly<F> {
     }
 
     /// Iterate over `(coeff, &monomial)` pairs in descending order.
-    pub fn iter(&self) -> impl Iterator<Item = (F, &MonoTerm)> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = (F, &M)> + '_ {
         let mut node = self.head;
         std::iter::from_fn(move || {
             let n = node?;
@@ -410,7 +404,7 @@ impl<F: Field + Copy> Poly<F> {
     }
 
     /// Leading term `(coeff, &monomial)`, or `None` if zero.
-    pub fn leading(&self) -> Option<(F, &MonoTerm)> {
+    pub fn leading(&self) -> Option<(F, &M)> {
         self.head.map(|h| {
             // SAFETY: `h` is a live leading node bounded by `self`.
             let r = unsafe { h.as_ref() };
@@ -440,7 +434,7 @@ impl<F: Field + Copy> Poly<F> {
     /// Both backends expose the same cursor shape — see the parent
     /// module's dispatcher for context.
     #[inline]
-    pub fn cursor(&self) -> PolyCursor<'_, F> {
+    pub fn cursor(&self) -> PolyCursor<'_, F, M> {
         PolyCursor {
             node: self.head,
             _marker: std::marker::PhantomData,
@@ -451,15 +445,15 @@ impl<F: Field + Copy> Poly<F> {
     /// `self` is zero or a single term, returns the zero polynomial.
     /// Implemented by walking the tail and cloning each node (O(n)
     /// like the Vec version).
-    pub fn drop_leading(&self) -> Poly<F> {
+    pub fn drop_leading(&self) -> Poly<F, M> {
         if self.len <= 1 {
             return Self::zero();
         }
         // Walk source starting from self.head.next; clone each node
         // into a fresh output chain.
 
-        let mut out_head: Option<NonNull<Node<F>>> = None;
-        let mut tail: *mut Option<NonNull<Node<F>>> = &mut out_head;
+        let mut out_head: Option<NonNull<Node<F, M>>> = None;
+        let mut tail: *mut Option<NonNull<Node<F, M>>> = &mut out_head;
         // Skip the leading node.
         let mut node = self.head.and_then(|h| {
             // SAFETY: `h` is live.
@@ -469,7 +463,7 @@ impl<F: Field + Copy> Poly<F> {
         while let Some(n) = node {
             // SAFETY: live node.
             let n_ref = unsafe { n.as_ref() };
-            let fresh = alloc(n_ref.coeff, n_ref.mono.clone(), None);
+            let fresh = alloc(n_ref.coeff, n_ref.mono, None);
             unsafe {
                 *tail = Some(fresh);
                 tail = &mut (*fresh.as_ptr()).next;
@@ -508,7 +502,7 @@ impl<F: Field + Copy> Poly<F> {
     // ----- Arithmetic -----
 
     /// In-place: `self = self + other`.
-    pub fn add_assign<O: MonoOrder>(&mut self, other: &Poly<F>, ring: &Ring<F, O>) {
+    pub fn add_assign(&mut self, other: &Poly<F, M>, ring: &Ring<F>) {
         if other.is_zero() {
             return;
         }
@@ -520,7 +514,7 @@ impl<F: Field + Copy> Poly<F> {
     }
 
     /// Out-of-place addition.
-    pub fn add<O: MonoOrder>(&self, other: &Poly<F>, ring: &Ring<F, O>) -> Poly<F> {
+    pub fn add(&self, other: &Poly<F, M>, ring: &Ring<F>) -> Poly<F, M> {
         if other.is_zero() {
             return self.clone();
         }
@@ -537,7 +531,7 @@ impl<F: Field + Copy> Poly<F> {
     /// ADR-015 for the contract mapping. Both operands are consumed
     /// (ownership transfer enforces Singular's "Destroys: p, q"
     /// comment at the Rust type level).
-    pub fn add_consuming<O: MonoOrder>(self, other: Poly<F>, ring: &Ring<F, O>) -> Poly<F> {
+    pub fn add_consuming(self, other: Poly<F, M>, ring: &Ring<F>) -> Poly<F, M> {
         if other.is_zero() {
             return self;
         }
@@ -548,7 +542,7 @@ impl<F: Field + Copy> Poly<F> {
     }
 
     /// Out-of-place subtraction.
-    pub fn sub<O: MonoOrder>(&self, other: &Poly<F>, ring: &Ring<F, O>) -> Poly<F> {
+    pub fn sub(&self, other: &Poly<F, M>, ring: &Ring<F>) -> Poly<F, M> {
         if other.is_zero() {
             return self.clone();
         }
@@ -559,19 +553,19 @@ impl<F: Field + Copy> Poly<F> {
     }
 
     /// Negation (flip every coefficient).
-    pub fn neg<O: MonoOrder>(&self, ring: &Ring<F, O>) -> Poly<F> {
+    pub fn neg(&self, ring: &Ring<F>) -> Poly<F, M> {
         let _ = ring;
         if self.is_zero() {
             return Self::zero();
         }
 
-        let mut out_head: Option<NonNull<Node<F>>> = None;
-        let mut tail: *mut Option<NonNull<Node<F>>> = &mut out_head;
+        let mut out_head: Option<NonNull<Node<F, M>>> = None;
+        let mut tail: *mut Option<NonNull<Node<F, M>>> = &mut out_head;
         let mut node = self.head;
         while let Some(n) = node {
             // SAFETY: `n` is a live node from `self`.
             let n_ref = unsafe { n.as_ref() };
-            let fresh = alloc(-(n_ref.coeff), n_ref.mono.clone(), None);
+            let fresh = alloc(-(n_ref.coeff), n_ref.mono, None);
             unsafe {
                 *tail = Some(fresh);
                 tail = &mut (*fresh.as_ptr()).next;
@@ -592,18 +586,18 @@ impl<F: Field + Copy> Poly<F> {
 
     /// Multiply every coefficient by a scalar. Returns zero if
     /// `c == 0`.
-    pub fn scale<O: MonoOrder>(&self, c: F, ring: &Ring<F, O>) -> Poly<F> {
+    pub fn scale(&self, c: F, ring: &Ring<F>) -> Poly<F, M> {
         let _ = ring;
         if c.is_zero() || self.is_zero() {
             return Self::zero();
         }
 
-        let mut out_head: Option<NonNull<Node<F>>> = None;
-        let mut tail: *mut Option<NonNull<Node<F>>> = &mut out_head;
+        let mut out_head: Option<NonNull<Node<F, M>>> = None;
+        let mut tail: *mut Option<NonNull<Node<F, M>>> = &mut out_head;
         let mut node = self.head;
         while let Some(n) = node {
             let n_ref = unsafe { n.as_ref() };
-            let fresh = alloc((n_ref.coeff) * (c), n_ref.mono.clone(), None);
+            let fresh = alloc((n_ref.coeff) * (c), n_ref.mono, None);
             unsafe {
                 *tail = Some(fresh);
                 tail = &mut (*fresh.as_ptr()).next;
@@ -625,13 +619,13 @@ impl<F: Field + Copy> Poly<F> {
     /// Multiply every monomial by `m`. Per ADR-018, the caller's ring
     /// construction must ensure no product overflows the 7-bit
     /// per-variable budget; release builds do not check.
-    pub fn shift<O: MonoOrder>(&self, m: &MonoTerm, ring: &Ring<F, O>) -> Poly<F> {
+    pub fn shift(&self, m: &M, ring: &Ring<F>) -> Poly<F, M> {
         if self.is_zero() {
             return Self::zero();
         }
 
-        let mut out_head: Option<NonNull<Node<F>>> = None;
-        let mut tail: *mut Option<NonNull<Node<F>>> = &mut out_head;
+        let mut out_head: Option<NonNull<Node<F, M>>> = None;
+        let mut tail: *mut Option<NonNull<Node<F, M>>> = &mut out_head;
         let mut node = self.head;
         while let Some(n) = node {
             let n_ref = unsafe { n.as_ref() };
@@ -660,11 +654,11 @@ impl<F: Field + Copy> Poly<F> {
     /// Standard multiplication via an accumulator (same strategy as
     /// the Vec backend). Per ADR-018, the caller must ensure no
     /// product overflows.
-    pub fn mul<O: MonoOrder>(&self, other: &Poly<F>, ring: &Ring<F, O>) -> Poly<F> {
+    pub fn mul(&self, other: &Poly<F, M>, ring: &Ring<F>) -> Poly<F, M> {
         if self.is_zero() || other.is_zero() {
             return Self::zero();
         }
-        let mut acc: Vec<(F, MonoTerm)> = Vec::with_capacity(self.len * other.len);
+        let mut acc: Vec<(F, M)> = Vec::with_capacity(self.len * other.len);
         for (ca, ma) in self.iter() {
             for (cb, mb) in other.iter() {
                 let m = ma.mul(mb, ring);
@@ -683,19 +677,13 @@ impl<F: Field + Copy> Poly<F> {
     /// Per ADR-018, the caller's ring construction must guarantee
     /// that every `m * q[i]` product stays in-range; release builds
     /// do not check.
-    pub fn sub_mul_term<O: MonoOrder>(
-        &self,
-        c: F,
-        m: &MonoTerm,
-        q: &Poly<F>,
-        ring: &Ring<F, O>,
-    ) -> Poly<F> {
+    pub fn sub_mul_term(&self, c: F, m: &M, q: &Poly<F, M>, ring: &Ring<F>) -> Poly<F, M> {
         if c.is_zero() || q.is_zero() {
             return self.clone();
         }
 
-        let mut out_head: Option<NonNull<Node<F>>> = None;
-        let mut tail: *mut Option<NonNull<Node<F>>> = &mut out_head;
+        let mut out_head: Option<NonNull<Node<F, M>>> = None;
+        let mut tail: *mut Option<NonNull<Node<F, M>>> = &mut out_head;
         let mut out_len: usize = 0;
 
         let mut left = self.head;
@@ -706,9 +694,9 @@ impl<F: Field + Copy> Poly<F> {
             let l_ref = unsafe { l.as_ref() };
             let r_ref = unsafe { r.as_ref() };
             let r_mono = m.mul(&r_ref.mono, ring);
-            match l_ref.mono.cmp(&r_mono, ring) {
+            match l_ref.mono.cmp(&r_mono) {
                 std::cmp::Ordering::Greater => {
-                    let fresh = alloc(l_ref.coeff, l_ref.mono.clone(), None);
+                    let fresh = alloc(l_ref.coeff, l_ref.mono, None);
                     unsafe {
                         *tail = Some(fresh);
                         tail = &mut (*fresh.as_ptr()).next;
@@ -732,7 +720,7 @@ impl<F: Field + Copy> Poly<F> {
                     let cmq = (c) * (r_ref.coeff);
                     let diff = (l_ref.coeff) - (cmq);
                     if !diff.is_zero() {
-                        let fresh = alloc(diff, l_ref.mono.clone(), None);
+                        let fresh = alloc(diff, l_ref.mono, None);
                         unsafe {
                             *tail = Some(fresh);
                             tail = &mut (*fresh.as_ptr()).next;
@@ -747,7 +735,7 @@ impl<F: Field + Copy> Poly<F> {
         while let Some(l) = left {
             // SAFETY: live node.
             let l_ref = unsafe { l.as_ref() };
-            let fresh = alloc(l_ref.coeff, l_ref.mono.clone(), None);
+            let fresh = alloc(l_ref.coeff, l_ref.mono, None);
             unsafe {
                 *tail = Some(fresh);
                 tail = &mut (*fresh.as_ptr()).next;
@@ -798,34 +786,34 @@ impl<F: Field + Copy> Poly<F> {
     /// Includes the tail-splice fast path: when `self` exhausts before
     /// `q`, the remainder of `-c * m * q` is produced in a single pass
     /// and appended, rather than going through the compare loop.
-    pub fn sub_mm_mult_qq_consuming<O: MonoOrder>(
+    pub fn sub_mm_mult_qq_consuming(
         mut self,
         c: F,
-        m: &MonoTerm,
-        q: &Poly<F>,
-        ring: &Ring<F, O>,
-    ) -> Poly<F> {
+        m: &M,
+        q: &Poly<F, M>,
+        ring: &Ring<F>,
+    ) -> Poly<F, M> {
         if c.is_zero() || q.is_zero() {
             return self;
         }
 
         // Sentinel-slot pattern: `sentinel_slot` is a stack-local
-        // `Option<NonNull<Node<F>>>` that will end up containing the
+        // `Option<NonNull<Node<F, M>>>` that will end up containing the
         // output chain's head. `tail_slot` tracks the slot where the
         // next node attaches (starts at `&mut sentinel_slot`, moves
         // to `&mut new_node.next` after each append). See ADR-015 for
         // the soundness argument.
-        let mut sentinel_slot: Option<NonNull<Node<F>>> = None;
-        let mut tail_slot: *mut Option<NonNull<Node<F>>> = &mut sentinel_slot;
+        let mut sentinel_slot: Option<NonNull<Node<F, M>>> = None;
+        let mut tail_slot: *mut Option<NonNull<Node<F, M>>> = &mut sentinel_slot;
         let mut out_len: usize = 0;
 
         // Take ownership of self's chain. From here on, `self.head`
         // is None until we reconstruct at the end.
-        let mut left: Option<NonNull<Node<F>>> = self.head.take();
-        let mut right: Option<NonNull<Node<F>>> = q.head;
+        let mut left: Option<NonNull<Node<F, M>>> = self.head.take();
+        let mut right: Option<NonNull<Node<F, M>>> = q.head;
 
         // SAFETY: Every write through `tail_slot` targets an
-        // `Option<NonNull<Node<F>>>` that belongs to either
+        // `Option<NonNull<Node<F, M>>>` that belongs to either
         // `sentinel_slot` (on the first iteration) or the `next`
         // field of the node most recently appended (which
         // `sentinel_slot` transitively owns through the chain).
@@ -837,15 +825,11 @@ impl<F: Field + Copy> Poly<F> {
         // it in, or (b) detach a node from `left` and splice it
         // in, with the detach completing before the write.
         unsafe {
-            loop {
-                let (l, r) = match (left, right) {
-                    (Some(l), Some(r)) => (l, r),
-                    _ => break,
-                };
+            while let (Some(l), Some(r)) = (left, right) {
                 let l_ref = l.as_ref();
                 let r_ref = r.as_ref();
                 let r_mono = m.mul(&r_ref.mono, ring);
-                match l_ref.mono.cmp(&r_mono, ring) {
+                match l_ref.mono.cmp(&r_mono) {
                     std::cmp::Ordering::Greater => {
                         // Splice left's head into the output tail.
                         let l_ptr = l.as_ptr();
@@ -926,7 +910,7 @@ impl<F: Field + Copy> Poly<F> {
     }
 
     /// Scale so the leading coefficient becomes 1.
-    pub fn monic<O: MonoOrder>(&self, ring: &Ring<F, O>) -> Option<Poly<F>> {
+    pub fn monic(&self, ring: &Ring<F>) -> Option<Poly<F, M>> {
         if self.is_zero() {
             return Some(Self::zero());
         }
@@ -941,17 +925,17 @@ impl<F: Field + Copy> Poly<F> {
     // ----- Invariants -----
 
     /// Panic if any internal invariant is violated.
-    pub fn assert_canonical<O: MonoOrder>(&self, ring: &Ring<F, O>) {
+    pub fn assert_canonical(&self, ring: &Ring<F>) {
         let mut node = self.head;
-        let mut prev: Option<&MonoTerm> = None;
+        let mut prev: Option<&M> = None;
         let mut count: usize = 0;
         while let Some(n) = node {
             // SAFETY: live node.
             let n_ref = unsafe { n.as_ref() };
             assert!(!n_ref.coeff.is_zero(), "coeff[{count}] is zero");
-            n_ref.mono.assert_canonical(ring);
+            n_ref.mono.as_mono_term().assert_canonical(ring);
             if let Some(p_m) = prev {
-                let ord = p_m.cmp(&n_ref.mono, ring);
+                let ord = p_m.cmp(&n_ref.mono);
                 assert!(
                     ord == std::cmp::Ordering::Greater,
                     "terms not strictly descending at [{count}]: got {ord:?}"
@@ -969,14 +953,14 @@ impl<F: Field + Copy> Poly<F> {
         } else {
             // SAFETY: head is live and non-null here.
             let h = unsafe { self.head.unwrap().as_ref() };
-            assert_eq!(self.lm_sev, h.mono.sev());
+            assert_eq!(self.lm_sev, h.mono.as_mono_term().sev());
             assert_eq!(self.lm_coeff, h.coeff);
-            assert_eq!(self.lm_deg, h.mono.total_deg());
+            assert_eq!(self.lm_deg, h.mono.as_mono_term().total_deg());
         }
     }
 }
 
-impl<F: Field + Copy> Default for Poly<F> {
+impl<F: Field + Copy, M: Monomial<F>> Default for Poly<F, M> {
     fn default() -> Self {
         Self::zero()
     }
@@ -992,12 +976,12 @@ impl<F: Field + Copy> Default for Poly<F> {
 /// shape on both backends lets [`crate::reducer::Reducer`] work
 /// uniformly.
 #[derive(Clone, Copy)]
-pub struct PolyCursor<'a, F: Field + Copy> {
-    node: Option<NonNull<Node<F>>>,
-    _marker: std::marker::PhantomData<&'a Node<F>>,
+pub struct PolyCursor<'a, F: Field + Copy, M: Monomial<F> = crate::monomial::GrevLexTerm> {
+    node: Option<NonNull<Node<F, M>>>,
+    _marker: std::marker::PhantomData<&'a Node<F, M>>,
 }
 
-impl<'a, F: Field + Copy> std::fmt::Debug for PolyCursor<'a, F> {
+impl<'a, F: Field + Copy, M: Monomial<F>> std::fmt::Debug for PolyCursor<'a, F, M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PolyCursor")
             .field("exhausted", &self.node.is_none())
@@ -1005,10 +989,10 @@ impl<'a, F: Field + Copy> std::fmt::Debug for PolyCursor<'a, F> {
     }
 }
 
-impl<'a, F: Field + Copy> PolyCursor<'a, F> {
+impl<'a, F: Field + Copy, M: Monomial<F>> PolyCursor<'a, F, M> {
     /// Current term `(coeff, &monomial)`, or `None` if exhausted.
     #[inline]
-    pub fn term(&self) -> Option<(F, &'a MonoTerm)> {
+    pub fn term(&self) -> Option<(F, &'a M)> {
         self.node.map(|n| {
             // SAFETY: the cursor's lifetime `'a` is tied to the
             // borrowed `Poly`; its chain stays live for `'a`.
@@ -1033,7 +1017,7 @@ impl<'a, F: Field + Copy> PolyCursor<'a, F> {
     }
 }
 
-impl<F: Field + Copy> PartialEq for Poly<F> {
+impl<F: Field + Copy, M: Monomial<F>> PartialEq for Poly<F, M> {
     fn eq(&self, other: &Self) -> bool {
         // Same length + same terms in order. We compare through
         // cursors so the comparison stays O(n) (no materialised
@@ -1056,7 +1040,7 @@ impl<F: Field + Copy> PartialEq for Poly<F> {
         a.is_none() && b.is_none()
     }
 }
-impl<F: Field + Copy> Eq for Poly<F> {}
+impl<F: Field + Copy, M: Monomial<F>> Eq for Poly<F, M> {}
 
 /// Destructive merge: walk both chains, splicing input nodes
 /// directly into the output chain rather than allocating fresh
@@ -1067,19 +1051,19 @@ impl<F: Field + Copy> Eq for Poly<F> {}
 /// coefficients.
 ///
 /// Both inputs must be nonempty (callers guard zero operands).
-fn merge_consuming<F: Field + Copy, O: MonoOrder>(
-    ring: &Ring<F, O>,
-    a: Poly<F>,
-    b: Poly<F>,
+fn merge_consuming<F: Field + Copy, M: Monomial<F>>(
+    _ring: &Ring<F>,
+    a: Poly<F, M>,
+    b: Poly<F, M>,
     subtract: bool,
-) -> Poly<F> {
+) -> Poly<F, M> {
     debug_assert!(!a.is_zero());
     debug_assert!(!b.is_zero());
 
     // Sentinel-slot pattern (see `sub_mm_mult_qq_consuming` for the
     // soundness argument).
-    let mut sentinel_slot: Option<NonNull<Node<F>>> = None;
-    let mut tail_slot: *mut Option<NonNull<Node<F>>> = &mut sentinel_slot;
+    let mut sentinel_slot: Option<NonNull<Node<F, M>>> = None;
+    let mut tail_slot: *mut Option<NonNull<Node<F, M>>> = &mut sentinel_slot;
     let mut out_len: usize = 0;
 
     // Move both input chains into local owned variables. We can't
@@ -1088,24 +1072,20 @@ fn merge_consuming<F: Field + Copy, O: MonoOrder>(
     // drop of `a` / `b` is O(1).
     let mut a = a;
     let mut b = b;
-    let mut left: Option<NonNull<Node<F>>> = a.head.take();
-    let mut right: Option<NonNull<Node<F>>> = b.head.take();
+    let mut left: Option<NonNull<Node<F, M>>> = a.head.take();
+    let mut right: Option<NonNull<Node<F, M>>> = b.head.take();
 
     // SAFETY: Identical argument to `sub_mm_mult_qq_consuming`.
     // Every write through `tail_slot` targets an
-    // `Option<NonNull<Node<F>>>` that belongs to the sentinel chain.
+    // `Option<NonNull<Node<F, M>>>` that belongs to the sentinel chain.
     // `sentinel_slot` outlives every update. Input nodes are
     // detached from their source list before any dereference of
     // `tail_slot` through the spliced pointer.
     unsafe {
-        loop {
-            let (l, r) = match (left, right) {
-                (Some(l), Some(r)) => (l, r),
-                _ => break,
-            };
+        while let (Some(l), Some(r)) = (left, right) {
             let l_ref = l.as_ref();
             let r_ref = r.as_ref();
-            match l_ref.mono.cmp(&r_ref.mono, ring) {
+            match l_ref.mono.cmp(&r_ref.mono) {
                 std::cmp::Ordering::Greater => {
                     let l_ptr = l.as_ptr();
                     left = (*l_ptr).next.take();
@@ -1171,7 +1151,7 @@ fn merge_consuming<F: Field + Copy, O: MonoOrder>(
             // If subtracting, every node's coeff must be negated.
             // Otherwise the remainder can be spliced as-is.
             if subtract {
-                let mut cur: Option<NonNull<Node<F>>> = Some(r_head);
+                let mut cur: Option<NonNull<Node<F, M>>> = Some(r_head);
                 while let Some(n) = cur {
                     let n_ptr = n.as_ptr();
                     let nxt = (*n_ptr).next.take();
@@ -1211,14 +1191,14 @@ fn merge_consuming<F: Field + Copy, O: MonoOrder>(
 /// operand's coefficients are negated. Allocates fresh nodes for
 /// every output term (list-splice node reuse is a future
 /// optimisation).
-fn merge<F: Field + Copy, O: MonoOrder>(
-    ring: &Ring<F, O>,
-    a: &Poly<F>,
-    b: &Poly<F>,
+fn merge<F: Field + Copy, M: Monomial<F>>(
+    _ring: &Ring<F>,
+    a: &Poly<F, M>,
+    b: &Poly<F, M>,
     subtract: bool,
-) -> Poly<F> {
-    let mut out_head: Option<NonNull<Node<F>>> = None;
-    let mut tail: *mut Option<NonNull<Node<F>>> = &mut out_head;
+) -> Poly<F, M> {
+    let mut out_head: Option<NonNull<Node<F, M>>> = None;
+    let mut tail: *mut Option<NonNull<Node<F, M>>> = &mut out_head;
     let mut out_len: usize = 0;
 
     let mut left = a.head;
@@ -1228,9 +1208,9 @@ fn merge<F: Field + Copy, O: MonoOrder>(
         // SAFETY: live nodes from a / b.
         let l_ref = unsafe { l.as_ref() };
         let r_ref = unsafe { r.as_ref() };
-        match l_ref.mono.cmp(&r_ref.mono, ring) {
+        match l_ref.mono.cmp(&r_ref.mono) {
             std::cmp::Ordering::Greater => {
-                let fresh = alloc(l_ref.coeff, l_ref.mono.clone(), None);
+                let fresh = alloc(l_ref.coeff, l_ref.mono, None);
                 unsafe {
                     *tail = Some(fresh);
                     tail = &mut (*fresh.as_ptr()).next;
@@ -1247,7 +1227,7 @@ fn merge<F: Field + Copy, O: MonoOrder>(
                 // c is nonzero as long as r.coeff is nonzero
                 // (which it always is by the canonical invariant):
                 // negating preserves nonzeroness.
-                let fresh = alloc(c, r_ref.mono.clone(), None);
+                let fresh = alloc(c, r_ref.mono, None);
                 unsafe {
                     *tail = Some(fresh);
                     tail = &mut (*fresh.as_ptr()).next;
@@ -1263,7 +1243,7 @@ fn merge<F: Field + Copy, O: MonoOrder>(
                 };
                 let s = (l_ref.coeff) + (bc);
                 if !s.is_zero() {
-                    let fresh = alloc(s, l_ref.mono.clone(), None);
+                    let fresh = alloc(s, l_ref.mono, None);
                     unsafe {
                         *tail = Some(fresh);
                         tail = &mut (*fresh.as_ptr()).next;
@@ -1278,7 +1258,7 @@ fn merge<F: Field + Copy, O: MonoOrder>(
     while let Some(l) = left {
         // SAFETY: live node.
         let l_ref = unsafe { l.as_ref() };
-        let fresh = alloc(l_ref.coeff, l_ref.mono.clone(), None);
+        let fresh = alloc(l_ref.coeff, l_ref.mono, None);
         unsafe {
             *tail = Some(fresh);
             tail = &mut (*fresh.as_ptr()).next;
@@ -1294,7 +1274,7 @@ fn merge<F: Field + Copy, O: MonoOrder>(
         } else {
             r_ref.coeff
         };
-        let fresh = alloc(c, r_ref.mono.clone(), None);
+        let fresh = alloc(c, r_ref.mono, None);
         unsafe {
             *tail = Some(fresh);
             tail = &mut (*fresh.as_ptr()).next;
@@ -1318,22 +1298,22 @@ fn merge<F: Field + Copy, O: MonoOrder>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ordering::DegRevLex;
+    use crate::monomial::{GrevLexTerm, MonoTerm};
     use ark_bls12_381::Fr;
 
     type F = Fr;
 
-    fn mk_ring(nvars: u32, _p: u32) -> Ring<F, DegRevLex> {
-        Ring::<F, DegRevLex>::new(nvars, DegRevLex).unwrap()
+    fn mk_ring(nvars: u32, _p: u32) -> Ring<F> {
+        Ring::<F>::new(nvars).unwrap()
     }
 
-    fn mono(r: &Ring<F, DegRevLex>, e: &[u32]) -> MonoTerm {
-        MonoTerm::from_exponents(r, e).unwrap()
+    fn mono(r: &Ring<F>, e: &[u32]) -> GrevLexTerm {
+        GrevLexTerm::from(MonoTerm::from_exponents(r, e).unwrap())
     }
 
     #[test]
     fn zero_is_zero() {
-        let p = Poly::zero();
+        let p = Poly::<F>::zero();
         assert!(p.is_zero());
         assert_eq!(p.len(), 0);
         assert!(p.leading().is_none());
@@ -1371,7 +1351,7 @@ mod tests {
                 (F::from(1u64), mono(&r, &[0, 0, 1])),
             ],
         );
-        let g = (&f) - (&r);
+        let g = f.sub(&f, &r);
         g.assert_canonical(&r);
         assert!(g.is_zero());
     }
@@ -1434,8 +1414,8 @@ mod tests {
         );
         let (c, m) = p.leading().unwrap();
         assert_eq!(c, F::from(3u64));
-        assert_eq!(m.total_deg(), 2);
-        assert_eq!(p.lm_sev(), m.sev());
+        assert_eq!(m.0.total_deg(), 2);
+        assert_eq!(p.lm_sev(), m.0.sev());
         assert_eq!(p.lm_coeff(), F::from(3u64));
         assert_eq!(p.lm_deg(), 2);
     }
@@ -1574,7 +1554,7 @@ mod tests {
                 (F::from(1u64), mono(&r, &[0, 0, 1])),
             ],
         );
-        let neg_f = -(&r);
+        let neg_f = f.neg(&r);
         let got = f.clone().add_consuming(neg_f, &r);
         got.assert_canonical(&r);
         assert!(got.is_zero());
@@ -1643,17 +1623,17 @@ mod tests {
                 (F::from(4u64), mono(&r, &[1, 1])),
             ],
         );
-        let z = Poly::zero();
+        let z = Poly::<F>::zero();
         // f + 0 = f.
         let got = f.clone().add_consuming(z.clone(), &r);
         got.assert_canonical(&r);
         assert_eq!(got, f);
         // 0 + f = f.
-        let got = Poly::zero().add_consuming(f.clone(), &r);
+        let got = Poly::<F>::zero().add_consuming(f.clone(), &r);
         got.assert_canonical(&r);
         assert_eq!(got, f);
         // 0 + 0 = 0.
-        let got = Poly::zero().add_consuming(Poly::zero(), &r);
+        let got = Poly::<F>::zero().add_consuming(Poly::<F>::zero(), &r);
         assert!(got.is_zero());
     }
 
@@ -1796,7 +1776,7 @@ mod tests {
                 (F::from(4u64), mono(&r, &[1, 1])),
             ],
         );
-        let q = Poly::zero();
+        let q = Poly::<F>::zero();
         let m = mono(&r, &[0, 1]);
         let got = p
             .clone()
@@ -1818,8 +1798,8 @@ mod tests {
         );
         let m = mono(&r, &[1, 0]);
         let c: F = F::from(2u64);
-        let expected = Poly::zero().sub_mul_term(c, &m, &q, &r);
-        let got = Poly::zero().sub_mm_mult_qq_consuming(c, &m, &q, &r);
+        let expected = Poly::<F>::zero().sub_mul_term(c, &m, &q, &r);
+        let got = Poly::<F>::zero().sub_mm_mult_qq_consuming(c, &m, &q, &r);
         got.assert_canonical(&r);
         assert_eq!(got, expected);
     }
@@ -1839,7 +1819,7 @@ mod tests {
         let r = mk_ring(4, 32003);
         let n: usize = 100_000;
 
-        let mut distinct: Vec<MonoTerm> = Vec::with_capacity(n);
+        let mut distinct: Vec<GrevLexTerm> = Vec::with_capacity(n);
         'outer: for d in 0u32..64 {
             for c in 0u32..64 {
                 for b in 0u32..64 {
@@ -1853,8 +1833,9 @@ mod tests {
             }
         }
         // Sort descending under the ring's ordering.
-        distinct.sort_by(|x, y| y.cmp(x, &r));
-        let terms: Vec<(F, MonoTerm)> = distinct.into_iter().map(|m| (F::from(1u64), m)).collect();
+        distinct.sort_by(|x, y| y.cmp(x));
+        let terms: Vec<(F, GrevLexTerm)> =
+            distinct.into_iter().map(|m| (F::from(1u64), m)).collect();
         let p = Poly::from_descending_terms_unchecked(&r, terms);
         assert_eq!(p.len(), n);
         // When `p` is dropped at scope exit, iterative Drop should

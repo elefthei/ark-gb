@@ -33,7 +33,7 @@ use std::sync::Arc;
 use crate::bba::reduce_lobject_geobucket;
 use crate::field::Field;
 use crate::lobject::LObject;
-use crate::ordering::MonoOrder;
+use crate::monomial::{MonoTerm, Monomial};
 use crate::pair::Pair;
 use crate::poly::Poly;
 use crate::ring::Ring;
@@ -41,7 +41,7 @@ use crate::sbasis::SBasis;
 
 /// Failure mode reported by [`is_groebner_basis`].
 #[derive(Debug)]
-pub enum GbError<F: Field + Copy + Send + Sync + 'static> {
+pub enum GbError<F: Field + Copy + Send + Sync + 'static, M: Monomial<F>> {
     /// Input generator at index `idx` did not reduce to zero modulo
     /// the candidate GB. The non-zero residue is included for
     /// diagnostics.
@@ -49,7 +49,7 @@ pub enum GbError<F: Field + Copy + Send + Sync + 'static> {
         /// Index of the offending input polynomial.
         idx: usize,
         /// The non-zero residue of `inputs[idx]` after reduction.
-        residue: Poly<F>,
+        residue: Poly<F, M>,
     },
     /// The S-polynomial of `(gb[i], gb[j])` (with `i < j`) did not
     /// reduce to zero modulo the candidate GB.
@@ -59,7 +59,7 @@ pub enum GbError<F: Field + Copy + Send + Sync + 'static> {
         /// Second index in the offending pair.
         j: usize,
         /// The non-zero residue of `S(gb[i], gb[j])` after reduction.
-        residue: Poly<F>,
+        residue: Poly<F, M>,
     },
 }
 
@@ -67,10 +67,10 @@ pub enum GbError<F: Field + Copy + Send + Sync + 'static> {
 /// inserted in input order; each insert triggers
 /// [`SBasis::clear_redundant_for`], which is a no-op for a properly
 /// reduced GB but keeps the contract the reducer relies on.
-fn build_sbasis<F: Field + Copy + Send + Sync + 'static, O: MonoOrder>(
-    ring: &Ring<F, O>,
-    basis: &[Poly<F>],
-) -> SBasis<F> {
+fn build_sbasis<F: Field + Copy + Send + Sync + 'static, M: Monomial<F> + From<MonoTerm>>(
+    ring: &Ring<F>,
+    basis: &[Poly<F, M>],
+) -> SBasis<F, M> {
     let mut sb = SBasis::new();
     for p in basis {
         if p.is_zero() {
@@ -92,11 +92,11 @@ fn build_sbasis<F: Field + Copy + Send + Sync + 'static, O: MonoOrder>(
 /// The basis is treated as a set of generators and is internally
 /// re-wrapped in an [`SBasis`]; pass the output of
 /// [`compute_gb`](crate::bba::compute_gb) directly.
-pub fn normal_form<F: Field + Copy + Send + Sync + 'static, O: MonoOrder>(
-    ring: &Arc<Ring<F, O>>,
-    f: &Poly<F>,
-    basis: &[Poly<F>],
-) -> Poly<F> {
+pub fn normal_form<F: Field + Copy + Send + Sync + 'static, M: Monomial<F> + From<MonoTerm>>(
+    ring: &Arc<Ring<F>>,
+    f: &Poly<F, M>,
+    basis: &[Poly<F, M>],
+) -> Poly<F, M> {
     if f.is_zero() {
         return f.clone();
     }
@@ -118,11 +118,14 @@ pub fn normal_form<F: Field + Copy + Send + Sync + 'static, O: MonoOrder>(
 /// normal-form reduction. For `|gb|` in the tens to hundreds and
 /// release-mode reductions, this is the right shape for a
 /// regression check.
-pub fn is_groebner_basis<F: Field + Copy + Send + Sync + 'static, O: MonoOrder>(
-    ring: &Arc<Ring<F, O>>,
-    input: &[Poly<F>],
-    gb: &[Poly<F>],
-) -> Result<(), GbError<F>> {
+pub fn is_groebner_basis<
+    F: Field + Copy + Send + Sync + 'static,
+    M: Monomial<F> + From<MonoTerm>,
+>(
+    ring: &Arc<Ring<F>>,
+    input: &[Poly<F, M>],
+    gb: &[Poly<F, M>],
+) -> Result<(), GbError<F, M>> {
     let s_basis = build_sbasis(ring, gb);
 
     // (1) input ⊆ ⟨gb⟩.
@@ -177,7 +180,7 @@ pub fn is_groebner_basis<F: Field + Copy + Send + Sync + 'static, O: MonoOrder>(
             // Build a placeholder Pair carrying the lcm of the two
             // leading monomials; sugar/arrival are not consulted by
             // the reduction path.
-            let lcm = lm_i.lcm(lm_j, ring);
+            let lcm = lm_i.as_mono_term().lcm(lm_j.as_mono_term(), ring);
             let pair = Pair::new(i as u32, j as u32, lcm, 0, 0);
             let mut lobj = match LObject::from_spoly(Arc::clone(ring), s_i, s_j, &pair) {
                 Some(o) => o,
