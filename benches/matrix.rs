@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use ark_bls12_381::Fr;
 use ark_ff::{UniformRand, Zero};
-use ark_gb::matrix::{SparseRow, rref, row_echelon};
+use ark_gb::matrix::{SparseRow, row_echelon, rref};
 use ark_std::rand::{SeedableRng, rngs::StdRng};
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 
@@ -37,14 +37,7 @@ fn random_rows(rows: usize, cols: usize, density_q: u32, seed: u64) -> Vec<Spars
         .collect()
 }
 
-fn bench_shape(
-    c: &mut Criterion,
-    name: &str,
-    rows: usize,
-    cols: usize,
-    density_q: u32,
-    seed: u64,
-) {
+fn bench_shape(c: &mut Criterion, name: &str, rows: usize, cols: usize, density_q: u32, seed: u64) {
     let mut group = c.benchmark_group(name);
     group.sample_size(SAMPLE_SIZE);
     group.measurement_time(MEASUREMENT_TIME);

@@ -261,10 +261,7 @@ mod tests {
     #[test]
     fn transpose_round_trips() {
         // 2x3 matrix: row 0 = [1, 0, 2], row 1 = [0, 3, 4]
-        let m: Matrix<Fr> = vec![
-            vec![(fr(1), 0), (fr(2), 2)],
-            vec![(fr(3), 1), (fr(4), 2)],
-        ];
+        let m: Matrix<Fr> = vec![vec![(fr(1), 0), (fr(2), 2)], vec![(fr(3), 1), (fr(4), 2)]];
         let t = transpose(&m, 3);
         // t is 3x2: col 0 of m -> row 0 of t etc.
         assert_eq!(t.len(), 3);
@@ -278,11 +275,7 @@ mod tests {
     #[test]
     fn mat_vec_identity() {
         // 3x3 identity, vec = [10, 20, 30]
-        let m: Matrix<Fr> = vec![
-            vec![(fr(1), 0)],
-            vec![(fr(1), 1)],
-            vec![(fr(1), 2)],
-        ];
+        let m: Matrix<Fr> = vec![vec![(fr(1), 0)], vec![(fr(1), 1)], vec![(fr(1), 2)]];
         let v = vec![fr(10), fr(20), fr(30)];
         assert_eq!(mat_vec_mul(&m, &v), v);
     }
@@ -291,10 +284,7 @@ mod tests {
     fn mat_vec_mixed() {
         // Row 0 = [1, 0, 2]; Row 1 = [0, 3, 4]; v = [5, 6, 7]
         // expected = [1*5 + 2*7, 3*6 + 4*7] = [19, 46]
-        let m: Matrix<Fr> = vec![
-            vec![(fr(1), 0), (fr(2), 2)],
-            vec![(fr(3), 1), (fr(4), 2)],
-        ];
+        let m: Matrix<Fr> = vec![vec![(fr(1), 0), (fr(2), 2)], vec![(fr(3), 1), (fr(4), 2)]];
         let out = mat_vec_mul(&m, &[fr(5), fr(6), fr(7)]);
         assert_eq!(out, vec![fr(19), fr(46)]);
     }
@@ -310,10 +300,7 @@ mod tests {
             (fr(0), 7), // zero
             (fr(1), 0),
         ]);
-        assert_eq!(
-            r.as_pairs(),
-            &[(fr(1), 0), (fr(3), 1), (fr(6), 5)]
-        );
+        assert_eq!(r.as_pairs(), &[(fr(1), 0), (fr(3), 1), (fr(6), 5)]);
         // invariant: strictly ascending columns
         let cols: Vec<_> = r.as_pairs().iter().map(|&(_, c)| c).collect();
         assert!(cols.windows(2).all(|w| w[0] < w[1]));

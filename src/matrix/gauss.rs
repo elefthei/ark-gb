@@ -96,9 +96,7 @@ pub fn rref<F: Field>(rows: &mut [SparseRow<F>]) -> usize {
     }
     // Back-substitute from the last pivot upward.
     for i in (1..rank).rev() {
-        let pivot_col = rows[i]
-            .leading_col()
-            .expect("row in [0, rank) is non-zero");
+        let pivot_col = rows[i].leading_col().expect("row in [0, rank) is non-zero");
         let (head, tail) = rows.split_at_mut(i);
         let pivot = &tail[0];
         for r in head.iter_mut() {
@@ -263,11 +261,7 @@ mod tests {
 
     #[test]
     fn rank_does_not_mutate() {
-        let rs = rows_from_dense(&[
-            vec![fr(1), fr(2)],
-            vec![fr(2), fr(4)],
-            vec![fr(0), fr(1)],
-        ]);
+        let rs = rows_from_dense(&[vec![fr(1), fr(2)], vec![fr(2), fr(4)], vec![fr(0), fr(1)]]);
         let snapshot = rs.clone();
         let r = rank(&rs);
         assert_eq!(r, 2);
@@ -385,7 +379,8 @@ mod tests {
                         .collect()
                 })
                 .collect();
-            let mut sparse: Vec<SparseRow<Fr>> = dense.iter().map(|d| SparseRow::from_dense(d)).collect();
+            let mut sparse: Vec<SparseRow<Fr>> =
+                dense.iter().map(|d| SparseRow::from_dense(d)).collect();
             let dense_rk = dense_rank(&mut dense.clone());
             let sparse_rk = row_echelon(&mut sparse);
             assert_eq!(
@@ -402,7 +397,11 @@ mod tests {
         let r0 = vec![fr(1), fr(2), fr(0), fr(3)];
         let r1 = vec![fr(0), fr(1), fr(4), fr(2)];
         // r2 = 2*r0 + 3*r1
-        let r2: Vec<Fr> = r0.iter().zip(&r1).map(|(a, b)| fr(2) * a + fr(3) * b).collect();
+        let r2: Vec<Fr> = r0
+            .iter()
+            .zip(&r1)
+            .map(|(a, b)| fr(2) * a + fr(3) * b)
+            .collect();
         let mut rs = rows_from_dense(&[r0, r1, r2]);
         let r = rref(&mut rs);
         assert_eq!(r, 2);

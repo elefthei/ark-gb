@@ -24,5 +24,5 @@
 pub mod gauss;
 pub mod sparse;
 
-pub use gauss::{rank, rref, row_echelon};
+pub use gauss::{rank, row_echelon, rref};
 pub use sparse::{Matrix, SparseRow, mat_vec_mul, transpose};

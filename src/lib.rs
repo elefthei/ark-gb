@@ -27,6 +27,7 @@
 pub mod bba;
 pub mod bset;
 pub mod computation;
+pub mod f4;
 pub mod field;
 pub mod gm;
 pub mod kbucket;
@@ -47,6 +48,7 @@ pub mod validate;
 pub use bba::compute_gb;
 pub use bset::BSet;
 pub use computation::{Computation, SharedLSet, SharedSBasis};
+pub use f4::compute_gb_f4;
 pub use field::Field;
 pub use kbucket::KBucket;
 pub use lobject::LObject;
