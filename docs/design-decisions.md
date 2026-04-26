@@ -3235,6 +3235,177 @@ from Phase I is the practically dominant win — Gröbner-basis
 
 ---
 
+## ADR-021: Phase K — zippel-style M-parametric pipeline
+
+**Status:** Accepted
+**Date:** 2026-04-26
+
+### Context
+
+Phase J closed the `Monomial: Copy` refactor and bounded what
+`compute_gb` can win without structural changes. The user requested
+that ark-gb's pipeline be **parametric on the monomial**, mirroring
+zippel's design at
+`~/git/zippel/graph/src/analyses/groebner/monomial.rs:11-518`,
+where the order is pinned by the *type* of the monomial (newtype
+wrappers around a shared data carrier, each with its own `Ord`).
+
+Two design rounds preceded this ADR:
+
+1. **K1+K2 (commit `78c8633`, superseded)**: introduced
+   `Ring<F, O: MonoOrder>` parametric in the order, with the order
+   trait providing `cmp(a, b, &RingData)` taking the ring as an
+   explicit argument. This was functionally equivalent to zippel's
+   pattern but **diverged structurally** — order lived on the ring,
+   not on the monomial.
+
+2. **K-redo (commit `860e66d`, this ADR)**: rolled K2 back. Pipeline
+   parametric in `M: Monomial<F>` where `M: Ord`. Order is on the
+   monomial type, ring carries no order.
+
+### Why we switched to K-redo
+
+Zippel parity. The crate was forked from rustgb specifically to
+back zippel; matching zippel's monomial design eliminates the
+adapter that would otherwise be needed at the FFI boundary. The
+`Ord`-based static dispatch is also a hair faster (no closure
+indirection through `MonoOrder::cmp`'s extra `&RingData` arg).
+
+### The runtime-`split` problem
+
+Zippel's `ElimTerm` works because its elimination predicate
+(`MonoTerm::eliminate_var(v: &PRef) -> bool` at
+`~/git/zippel/graph/src/analyses/groebner/monomial.rs:262-265`) is
+a **hardcoded global function** of variable kind (Local +
+Private+Uniform). It needs no runtime parameter.
+
+ark-gb previously supported `Elim { split: u32 }` as a runtime
+parameter — users could request a Gröbner basis under arbitrary
+block-elimination splits. Rust's `Ord::cmp(&self, other: &Self)`
+takes no extra argument, so a `split`-carrying newtype cannot
+read split from the ring at compare time.
+
+Three workarounds were considered:
+
+- **Const generic** `ElimTerm<const SPLIT: u32>(MonoTerm)` —
+  preserves all current tests/benches by monomorphising at each
+  call site, but forces split to be compile-time, breaking
+  potential FFI consumers that pass split at runtime.
+- **Per-term split** `ElimTerm { mono: MonoTerm, split: u32 }` —
+  +4 bytes per monomial, large memory overhead in BBA queues.
+- **Hardcoded sample newtype** — drop the runtime split entirely;
+  add concrete newtypes per elimination predicate the codebase
+  needs.
+
+We chose the **hardcoded sample**, matching zippel.
+
+### Design
+
+```text
+src/monomial.rs:
+  pub struct MonoTerm        // packed-data carrier, no Ord
+  pub trait Monomial<F>: Ord + ...
+      one / from_exponents / mul / divides / div / lcm /
+      total_deg / exponent / exponents / as_mono_term
+  pub struct GrevLexTerm(MonoTerm)  // impl Ord = degrevlex
+  pub struct OddElimTerm(MonoTerm)  // impl Ord = elim where idx % 2 == 1
+
+src/ring.rs:
+  pub struct Ring<F>          // nvars + masks; no order param
+
+src/ordering.rs:
+  doc-stub only; trait MonoOrder, structs DegRevLex/Elim removed
+```
+
+Pipeline structs that hold or process monomials gained an
+`M: Monomial<F>` parameter:
+
+- `Poly<F, M>`, `KBucket<F, M>`, `BBA<F, M>`, `Computation<F, M>`,
+  `Reducer<F, M>`, `LObject<F, M>`, `LSet<F, M>`, `BSet<F, M>`,
+  `Pair<F, M>`, `GMTracker<F, M>`.
+
+Free functions `compute_gb`, `validate::is_groebner_basis`, etc.,
+gained `<F, M>` generics.
+
+### Ring-free `Ord` — flip-mask correctness
+
+The existing `MonoTerm::cmp_degrevlex(other, &Ring<F>)` used the
+ring's per-nvars `cmp_flip_mask` to XOR-flip variable bytes before
+the lex compare. To make this ring-free for `Ord`, we observe:
+
+- The flip mask sets `0x7F` in **every variable byte** (positions
+  31 - nvars .. 30 of the 32-byte block) and `0x00` elsewhere.
+- Unused low bytes in canonical `MonoTerm` are always zero
+  (constructed via `from_exponents` which zeros them).
+- XOR'ing `0x7F` into a zero byte yields `0x7F`, but those bytes
+  are at positions less significant than any variable byte that
+  could differ between two canonical `MonoTerm`s built from the
+  same ring, so they never decide the comparison.
+
+Therefore a **constant flip mask**
+`[0x7F7F_7F7F_7F7F_7F7F × 3, 0x007F_7F7F_7F7F_7F7F]` (top byte 31
+held at zero for total-degree direction) is correct for all
+`nvars ∈ [1, 31]`. The implementation lives at
+`src/monomial.rs:DEGREVLEX_FLIP` with a unit test
+(`cmp_degrevlex_packed_matches_ring_version`) verifying it agrees
+with the ring-based version on randomly generated monomials.
+
+### Sample elim newtype
+
+`OddElimTerm` eliminates **odd-indexed** variables: the predicate
+is `|idx| idx % 2 == 1`. This is a sample / proof of concept. To
+add another elim order, define a new newtype + `impl Ord` calling
+`MonoTerm::cmp_elim_packed(other, &predicate)` with the desired
+predicate.
+
+### Tests / benches
+
+- `tests/elim_order.rs`: rewritten to test that `OddElimTerm`'s
+  `Ord` differs from `GrevLexTerm`'s on at least one monomial
+  pair where the difference is in odd-indexed exponents only, and
+  that a Gröbner basis under `OddElimTerm` retains the elimination
+  property (any leading monomial that uses no odd-indexed variable
+  lies in the elimination ideal).
+- All other tests/benches/examples default to `GrevLexTerm` and
+  `Ring::<Fr>::new(n)` (no order argument).
+
+187 tests pass; clippy clean.
+
+### Perf
+
+K-redo is structurally neutral — it changes which type parameter
+threads `Ord`, not what the algorithm does. Solid-bench parity
+vs `solid-master` baseline is the K5 acceptance criterion (deferred
+to a follow-up commit; the commit `860e66d` is purely the trait
+refactor).
+
+### Trade-offs accepted
+
+- **Lost**: runtime `split: u32` for elimination orders. Adding a
+  new elimination predicate requires a new newtype + recompile,
+  not a runtime config knob.
+- **Gained**: zippel parity (no FFI adapter), ring-free `Ord`,
+  cleaner trait bounds (`M: Monomial<F>` implies `M: Ord`), and
+  the type system enforces "you can't accidentally compare a
+  `GrevLexTerm` against an `OddElimTerm`".
+
+### Decision
+
+Adopt K-redo. The K1+K2 commit `78c8633` is **superseded** by
+`860e66d` and remains in history as a documented divergence
+explored before settling on zippel parity.
+
+### Follow-ups
+
+- **K4 cleanup**: `pub(crate)` audit on `MonoTerm`'s internal
+  helpers; verify newtype `Ord` impls are statically dispatched
+  in release codegen (`cargo asm`).
+- **K5 solid-bench**: criterion comparison vs `solid-master` on
+  cyclic-5/grevlex, katsura-5/grevlex, and the new
+  cyclic-5/oddelim case. Acceptance: `change` p > 0.05.
+
+---
+
 ## How to add a new ADR
 
 1. Pick the next number. Don't reuse retired numbers.
