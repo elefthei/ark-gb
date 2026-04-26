@@ -420,7 +420,6 @@ mod tests {
     use crate::ring::Ring;
     use crate::validate::is_groebner_basis;
 
-    #[allow(dead_code)]
     fn fr(x: u64) -> Fr {
         Fr::from(x)
     }
@@ -523,15 +522,41 @@ mod tests {
         assert_f4_validates(vec![f1, f2], ring);
     }
 
-    // NOTE: katsura_3 and cyclic_4 are intentionally NOT covered here.
-    // Both inputs trigger a pre-existing geobucket merge invariant bug
-    // in `kbucket.rs::minus_m_mult_p` (panics with "sub_mm_mult_qq
-    // shrank into smaller slot"), which fires inside both
-    // `compute_gb_serial` and `is_groebner_basis`'s reducer — so we
-    // cannot validate F4's output for them until that bug is fixed.
-    // The failure reproduces on a clean master checkout (see the
-    // `katsura_3_*` failures in `tests/groebner_correctness.rs`); it
-    // is out of scope for the F4 wiring phase.
+    #[test]
+    fn katsura_3() {
+        // Katsura-3: standard small benchmark.
+        //   x + 2y + 2z - 1
+        //   x² + 2y² + 2z² - x
+        //   2xy + 2yz - y
+        let ring = ring_n(3);
+        let f1 = poly_from_terms(
+            &ring,
+            vec![
+                (fr(1), vec![1, 0, 0]),
+                (fr(2), vec![0, 1, 0]),
+                (fr(2), vec![0, 0, 1]),
+                (-Fr::one(), vec![0, 0, 0]),
+            ],
+        );
+        let f2 = poly_from_terms(
+            &ring,
+            vec![
+                (fr(1), vec![2, 0, 0]),
+                (fr(2), vec![0, 2, 0]),
+                (fr(2), vec![0, 0, 2]),
+                (-Fr::one(), vec![1, 0, 0]),
+            ],
+        );
+        let f3 = poly_from_terms(
+            &ring,
+            vec![
+                (fr(2), vec![1, 1, 0]),
+                (fr(2), vec![0, 1, 1]),
+                (-Fr::one(), vec![0, 1, 0]),
+            ],
+        );
+        assert_same_gb(vec![f1, f2, f3], ring);
+    }
 
     #[test]
     fn cyclic_3() {
@@ -587,5 +612,50 @@ mod tests {
             vec![(Fr::one(), vec![1, 1, 1]), (-Fr::one(), vec![0, 0, 0])],
         );
         assert_same_gb(vec![f1, f2, f3], ring);
+    }
+
+    #[test]
+    fn cyclic_4() {
+        // Cyclic-4:
+        //   c1 = x + y + z + w
+        //   c2 = xy + yz + zw + wx
+        //   c3 = xyz + yzw + zwx + wxy
+        //   c4 = xyzw - 1
+        let ring = ring_n(4);
+        let c1 = poly_from_terms(
+            &ring,
+            vec![
+                (Fr::one(), vec![1, 0, 0, 0]),
+                (Fr::one(), vec![0, 1, 0, 0]),
+                (Fr::one(), vec![0, 0, 1, 0]),
+                (Fr::one(), vec![0, 0, 0, 1]),
+            ],
+        );
+        let c2 = poly_from_terms(
+            &ring,
+            vec![
+                (Fr::one(), vec![1, 1, 0, 0]),
+                (Fr::one(), vec![0, 1, 1, 0]),
+                (Fr::one(), vec![0, 0, 1, 1]),
+                (Fr::one(), vec![1, 0, 0, 1]),
+            ],
+        );
+        let c3 = poly_from_terms(
+            &ring,
+            vec![
+                (Fr::one(), vec![1, 1, 1, 0]),
+                (Fr::one(), vec![0, 1, 1, 1]),
+                (Fr::one(), vec![1, 0, 1, 1]),
+                (Fr::one(), vec![1, 1, 0, 1]),
+            ],
+        );
+        let c4 = poly_from_terms(
+            &ring,
+            vec![
+                (Fr::one(), vec![1, 1, 1, 1]),
+                (-Fr::one(), vec![0, 0, 0, 0]),
+            ],
+        );
+        assert_same_gb(vec![c1, c2, c3, c4], ring);
     }
 }

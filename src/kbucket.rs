@@ -27,12 +27,18 @@
 //! slot 14: length ≤ 4^14 = 2^28
 //! ```
 //!
-//! When a `minus_m_mult_p` operation's destination slot overflows its
-//! capacity, we cascade the resulting polynomial upward into the next
-//! slot — which in turn may need to merge with whatever lives there,
-//! possibly triggering another cascade, and so on. This mirrors the
+//! When a `minus_m_mult_p` operation's destination slot is already
+//! occupied, we cascade the resulting polynomial into the next slot
+//! the merged length picks — which in turn may need to merge with
+//! whatever lives there, possibly triggering another cascade, and so
+//! on. The cascade is intrinsically bidirectional: lengths typically
+//! grow when combining non-overlapping polynomials, but term
+//! cancellation can shrink the merged result into a strictly smaller
+//! slot. Termination is bounded by `NUM_SLOTS` iterations regardless
+//! of direction. This mirrors the
 //! `while (bucket->buckets[i] != NULL)` loop in `kBucket_Add_q` and
-//! `kBucket_Minus_m_Mult_p` in Singular's `kbuckets.cc`.
+//! `kBucket_Minus_m_Mult_p` in Singular's `kbuckets.cc`, which
+//! likewise allow either direction.
 //!
 //! ## Threading
 //!
@@ -197,9 +203,17 @@ impl<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> KBucket<F, M> {
     }
 
     /// Absorb a polynomial `q` into the slot hierarchy, cascading if
-    /// the destination slot overflows. This is the single merge
-    /// primitive used by both `minus_m_mult_p` (which hands us
+    /// the destination slot is already occupied. This is the single
+    /// merge primitive used by both `minus_m_mult_p` (which hands us
     /// `-c·m·p`) and `from_poly` seeding.
+    ///
+    /// The cascade may move in either direction: lengths typically
+    /// grow when adding non-overlapping polynomials (so `target > i`),
+    /// but term cancellation can shrink the merged result into a
+    /// strictly smaller slot (`target < i`). Termination is bounded
+    /// by `NUM_SLOTS` iterations regardless of direction — each step
+    /// either places into an empty slot, returns on full
+    /// cancellation, or consumes one more occupied slot.
     ///
     /// Precondition: `q` is already canonical (matches `Poly`
     /// invariants) and nonzero.
@@ -235,10 +249,15 @@ impl<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> KBucket<F, M> {
                         self.slots[i] = Some(merged);
                         return;
                     }
-                    debug_assert!(
-                        target > i,
-                        "merge shrank into smaller slot ({target} < {i})"
-                    );
+                    // The merge result may land in either a strictly
+                    // larger slot (typical case: lengths add) *or*
+                    // a strictly smaller one when terms cancel. Both
+                    // directions are valid; the cascade re-enters the
+                    // loop at the new slot and is bounded by
+                    // `NUM_SLOTS` iterations (each step either places
+                    // into an empty slot, returns on full
+                    // cancellation, or consumes one more occupied
+                    // slot).
                     debug_assert!(
                         target < NUM_SLOTS,
                         "bucket overflow: merged length {} > 4^{}",
@@ -301,14 +320,12 @@ impl<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> KBucket<F, M> {
             self.slots[i] = Some(merged);
             return;
         }
-        // `merged` outgrew slot `i`; cascade through `absorb`. The
-        // target slot is strictly larger, so the absorb loop starts
-        // from `target` and proceeds upward (same invariant as the
-        // add_consuming cascade).
-        debug_assert!(
-            target > i,
-            "sub_mm_mult_qq shrank into smaller slot ({target} < {i})"
-        );
+        // `merged` no longer fits slot `i` exactly; cascade through
+        // `absorb`. The new slot can be strictly larger (lengths
+        // grew when subtracting a non-overlapping `c·m·p`) or
+        // strictly smaller (cancellation shrank the result below
+        // `4^(i-1)`). `absorb` recomputes the slot from the actual
+        // merged length and handles both directions.
         self.absorb(merged);
     }
 
@@ -715,6 +732,53 @@ mod tests {
         let got = b.into_poly();
         expected.assert_canonical(&r);
         got.assert_canonical(&r);
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn cascade_shrinks_on_cancel() {
+        // Regression for the geobucket cascade invariant: when a
+        // `minus_m_mult_p` cancels terms out of slot `i`, the merged
+        // result can land in a strictly smaller slot. Prior to the
+        // fix, an upward-only `debug_assert!(target > i)` panicked
+        // with "sub_mm_mult_qq shrank into smaller slot".
+        //
+        // Setup: slot 1 holds a length-4 poly (a + b + c + d) where
+        // `slot_for_len(4) = 1`. Subtracting (b + c + d) — also a
+        // slot-1 poly — leaves length-1 `a`, which belongs in slot 0.
+        let r = mk_ring(2);
+        let mut b = KBucket::<Fr, GrevLexTerm>::new(Arc::clone(&r));
+        let one = GrevLexTerm::one(&r);
+        let p1 = Poly::from_terms(
+            &r,
+            vec![
+                (Fr::from(1u64), mono(&r, &[3, 0])),
+                (Fr::from(1u64), mono(&r, &[2, 0])),
+                (Fr::from(1u64), mono(&r, &[1, 0])),
+                (Fr::from(1u64), mono(&r, &[0, 1])),
+            ],
+        );
+        // Bucket += p1 (lands in slot 1).
+        b.minus_m_mult_p(&one, -Fr::one(), &p1);
+        b.assert_canonical();
+        assert!(b.slots[1].is_some(), "p1 (len 4) should populate slot 1");
+        // Subtract (x^2 + x + y), also length 3 → slot 1. The merge
+        // is `existing.sub_mm_mult_qq(1, 1, p2)` against slot 1's
+        // contents. Result: x^3 (length 1) which slot_for_len maps
+        // to slot 0. The cascade must place it there.
+        let p2 = Poly::from_terms(
+            &r,
+            vec![
+                (Fr::from(1u64), mono(&r, &[2, 0])),
+                (Fr::from(1u64), mono(&r, &[1, 0])),
+                (Fr::from(1u64), mono(&r, &[0, 1])),
+            ],
+        );
+        b.minus_m_mult_p(&one, Fr::one(), &p2); // bucket -= p2
+        b.assert_canonical();
+        // Final algebraic value: p1 - p2 = x^3.
+        let got = b.into_poly();
+        let expected = Poly::from_terms(&r, vec![(Fr::from(1u64), mono(&r, &[3, 0]))]);
         assert_eq!(got, expected);
     }
 
