@@ -9,7 +9,7 @@
 //! * `len()` matches the number of live pairs actually returned.
 
 use ark_bls12_381::Fr;
-use ark_gb::{LSet, MonoOrder, Monomial, Pair, Ring};
+use ark_gb::{LSet, MonoOrder, MonoTerm, Pair, Ring};
 use proptest::prelude::*;
 
 const NVARS: u32 = 3;
@@ -22,8 +22,8 @@ fn ring() -> Ring<Fr> {
 /// A fixed nontrivial LCM; the LSet properties depend only on the
 /// pair's (sugar, arrival, i, j) and identity key, not on the LCM
 /// itself.
-fn fixed_lcm(r: &Ring<Fr>) -> Monomial {
-    Monomial::from_exponents(r, &[1, 1, 1]).unwrap()
+fn fixed_lcm(r: &Ring<Fr>) -> MonoTerm {
+    MonoTerm::from_exponents(r, &[1, 1, 1]).unwrap()
 }
 
 /// Operations the test stream emits. Real Pair::new swaps (i, j) into
@@ -132,7 +132,7 @@ proptest! {
                 continue;
             }
             let (i, j) = if i < j { (i, j) } else { (j, i) };
-            let lcm = Monomial::from_exponents(&r, &[1, 1, 1]).unwrap();
+            let lcm = MonoTerm::from_exponents(&r, &[1, 1, 1]).unwrap();
             l.insert(Pair::new(i, j, lcm, s, arrival));
             arrival += 1;
             inserted_indices.push((i, j));

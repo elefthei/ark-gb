@@ -25,7 +25,7 @@
 use crate::bset::BSet;
 use crate::field::Field;
 use crate::lset::LSet;
-use crate::monomial::Monomial;
+use crate::monomial::MonoTerm;
 use crate::pair::Pair;
 use crate::poly::Poly;
 use crate::ring::Ring;
@@ -48,7 +48,7 @@ pub fn enter_one_pair_normal<F: Field + Copy + Send + Sync>(
     s_basis: &SBasis<F>,
     s_idx: u32,
     h_idx: u32,
-    h_lm: &Monomial,
+    h_lm: &MonoTerm,
     h_lm_sev: u64,
     h_sugar: u32,
     arrival: u64,
@@ -101,8 +101,8 @@ pub fn enter_one_pair_normal<F: Field + Copy + Send + Sync>(
 /// Coprime check on monomials: no variable has nonzero exponent in
 /// both. Called *after* the sev pre-filter rejects obvious shares.
 fn monomials_are_coprime<F: Field + Copy + Send + Sync>(
-    a: &Monomial,
-    b: &Monomial,
+    a: &MonoTerm,
+    b: &MonoTerm,
     ring: &Ring<F>,
 ) -> bool {
     let n = ring.nvars();
@@ -136,7 +136,7 @@ fn monomials_are_coprime<F: Field + Copy + Send + Sync>(
 pub fn chain_crit_normal<F: Field + Copy + Send + Sync>(
     ring: &Ring<F>,
     s_basis: &SBasis<F>,
-    h_lm: &Monomial,
+    h_lm: &MonoTerm,
     h_lm_sev: u64,
     h_idx: u32,
     b: &mut BSet,
@@ -310,8 +310,8 @@ mod tests {
         Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap()
     }
 
-    fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
-        Monomial::from_exponents(r, e).unwrap()
+    fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+        MonoTerm::from_exponents(r, e).unwrap()
     }
 
     #[test]

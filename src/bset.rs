@@ -134,7 +134,7 @@ impl BSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::monomial::Monomial;
+    use crate::monomial::MonoTerm;
     use crate::ordering::MonoOrder;
     use crate::ring::Ring;
     use ark_bls12_381::Fr;
@@ -144,7 +144,7 @@ mod tests {
     }
 
     fn mk_pair(r: &Ring<Fr>, i: u32, j: u32, sugar: u32, arrival: u64) -> Pair {
-        let lcm = Monomial::from_exponents(r, &vec![1u32; r.nvars() as usize]).unwrap();
+        let lcm = MonoTerm::from_exponents(r, &vec![1u32; r.nvars() as usize]).unwrap();
         Pair::new(i, j, lcm, sugar, arrival)
     }
 

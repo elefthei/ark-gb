@@ -9,14 +9,14 @@
 use std::ptr::NonNull;
 
 use crate::field::{Coeff, Field};
-use crate::monomial::Monomial;
+use crate::monomial::MonoTerm;
 
 use super::poly_list::Node;
 
 /// Allocate a `Node` via `Box::new`; hand back the raw pointer.
 pub(super) fn alloc<F: Field + Copy>(
     coeff: F,
-    mono: Monomial,
+    mono: MonoTerm,
     next: Option<NonNull<Node<F>>>,
 ) -> NonNull<Node<F>> {
     let b = Box::new(Node { coeff, mono, next });

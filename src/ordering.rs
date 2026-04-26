@@ -1,4 +1,4 @@
-//! Monomial orderings.
+//! MonoTerm orderings.
 
 /// The monomial ordering of a [`Ring`](crate::ring::Ring).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

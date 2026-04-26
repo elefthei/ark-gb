@@ -149,7 +149,7 @@ pub fn is_groebner_basis<F: Field + Copy + Send + Sync + 'static>(
     // `S(g_i, g_j)` reduces to 0 modulo `{g_i, g_j}` and a fortiori
     // modulo `G`. We detect coprimality in O(1) via the cached short
     // exponent vector — with `nvars <= 31` each variable owns a
-    // unique SEV bit (see Monomial::div, line 347), so
+    // unique SEV bit (see MonoTerm::div, line 347), so
     // `(sev_i & sev_j) == 0` is exactly "no shared variable" =
     // coprime LMs. This is sound for validation (it is one of
     // Buchberger's two original criteria, proven independent of any

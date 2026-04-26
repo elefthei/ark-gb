@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use crate::field::Field;
 use crate::kbucket::KBucket;
-use crate::monomial::Monomial;
+use crate::monomial::MonoTerm;
 use crate::pair::Pair;
 use crate::poly::Poly;
 use crate::ring::Ring;
@@ -190,14 +190,14 @@ impl<F: Field + Copy> LObject<F> {
 
     /// Read the bucket's leading term, refreshing the cache. Returns
     /// `None` when the LObject is zero.
-    pub fn leading(&mut self) -> Option<(F, &Monomial)> {
+    pub fn leading(&mut self) -> Option<(F, &MonoTerm)> {
         self.bucket.leading()
     }
 
     /// Extract the current leading term, shrinking the bucket by
     /// that term. Cache is cleared; call `refresh` before reading
     /// cached fields again.
-    pub fn extract_leading(&mut self) -> Option<(F, Monomial)> {
+    pub fn extract_leading(&mut self) -> Option<(F, MonoTerm)> {
         let out = self.bucket.extract_leading();
         // Cache is now stale; mark as such. The driver will refresh.
         self.lm_sev = 0;
@@ -229,8 +229,8 @@ mod tests {
         Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
     }
 
-    fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
-        Monomial::from_exponents(r, e).unwrap()
+    fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+        MonoTerm::from_exponents(r, e).unwrap()
     }
 
     #[test]

@@ -54,7 +54,7 @@ use crate::field::Field;
 use crate::kbucket::KBucket;
 use crate::lobject::LObject;
 use crate::lset::LSet;
-use crate::monomial::Monomial;
+use crate::monomial::MonoTerm;
 use crate::pair::Pair;
 use crate::poly::Poly;
 use crate::ring::Ring;
@@ -539,7 +539,7 @@ fn build_pair<F: Field + Copy + Send + Sync>(
     sevs: &[u64],
     lm_degs: &[u32],
     polys: &[Arc<Poly<F>>],
-    h_lm: &Monomial,
+    h_lm: &MonoTerm,
     h_lm_sev: u64,
     h_sugar: u32,
     arrival: u64,
@@ -568,8 +568,8 @@ fn build_pair<F: Field + Copy + Send + Sync>(
 }
 
 fn monomials_are_coprime<F: Field + Copy + Send + Sync>(
-    a: &Monomial,
-    b: &Monomial,
+    a: &MonoTerm,
+    b: &MonoTerm,
     ring: &Ring<F>,
 ) -> bool {
     let n = ring.nvars();
@@ -632,7 +632,7 @@ fn chain_crit_b_internal<F: Field + Copy + Send + Sync>(ring: &Ring<F>, b: &mut 
 fn chain_crit_l_side<F: Field + Copy + Send + Sync>(
     ring: &Ring<F>,
     polys_snapshot: &[Arc<Poly<F>>],
-    h_lm: &Monomial,
+    h_lm: &MonoTerm,
     h_lm_sev: u64,
     h_idx: u32,
     l: &mut LSet,
@@ -784,7 +784,7 @@ fn reduce_tail<F: Field + Copy + Send + Sync>(
         return tail;
     }
     let mut bucket = KBucket::from_poly(Arc::clone(ring), tail);
-    let mut done: Vec<(F, Monomial)> = Vec::new();
+    let mut done: Vec<(F, MonoTerm)> = Vec::new();
 
     #[allow(clippy::while_let_loop)]
     loop {
@@ -840,11 +840,11 @@ fn reduce_tail<F: Field + Copy + Send + Sync>(
 
 fn prepend_leading<F: Field + Copy + Send + Sync>(
     lc: F,
-    lm: &Monomial,
+    lm: &MonoTerm,
     tail: Poly<F>,
     ring: &Ring<F>,
 ) -> Poly<F> {
-    let mut terms: Vec<(F, Monomial)> = Vec::with_capacity(tail.len() + 1);
+    let mut terms: Vec<(F, MonoTerm)> = Vec::with_capacity(tail.len() + 1);
     terms.push((lc, *lm));
     for (c, m) in tail.iter() {
         terms.push((c, *m));
@@ -889,8 +889,8 @@ mod tests {
         Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
     }
 
-    fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
-        Monomial::from_exponents(r, e).unwrap()
+    fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+        MonoTerm::from_exponents(r, e).unwrap()
     }
 
     #[test]
@@ -910,7 +910,7 @@ mod tests {
     #[test]
     fn constant_input_gives_unit_gb_parallel() {
         let r = mk_ring(3);
-        let one = Poly::monomial(&r, Fr::one(), Monomial::one(&r));
+        let one = Poly::monomial(&r, Fr::one(), MonoTerm::one(&r));
         let gb = compute_gb_parallel(Arc::clone(&r), vec![one.clone()], 2).unwrap();
         assert_eq!(gb.len(), 1);
         assert_eq!(gb[0], one);

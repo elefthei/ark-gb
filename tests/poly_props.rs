@@ -6,7 +6,7 @@
 
 use ark_bls12_381::Fr;
 use ark_ff::{One, PrimeField, Zero};
-use ark_gb::{MonoOrder, Monomial, Poly, Ring};
+use ark_gb::{MonoOrder, MonoTerm, Poly, Ring};
 use proptest::prelude::*;
 
 fn arb_fr() -> impl Strategy<Value = Fr> {
@@ -32,9 +32,9 @@ fn poly_strategy(
         0..=max_terms,
     )
     .prop_map(move |terms| {
-        let converted: Vec<(Fr, Monomial)> = terms
+        let converted: Vec<(Fr, MonoTerm)> = terms
             .into_iter()
-            .map(|(c, e)| (c, Monomial::from_exponents(&ring, &e).unwrap()))
+            .map(|(c, e)| (c, MonoTerm::from_exponents(&ring, &e).unwrap()))
             .collect();
         let p = Poly::from_terms(&ring, converted);
         (ring.clone(), p)
@@ -72,7 +72,7 @@ fn ring_poly1_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>)> {
 }
 
 fn ring_poly_term_strategy()
--> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>, Fr, Monomial)> {
+-> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>, Fr, MonoTerm)> {
     ring_strategy(4).prop_flat_map(|r| {
         let n = r.nvars() as usize;
         (
@@ -83,7 +83,7 @@ fn ring_poly_term_strategy()
             prop::collection::vec(0u32..20, n),
         )
             .prop_map(move |(r, (_, p1), (_, p2), c, exps)| {
-                let m = Monomial::from_exponents(&r, &exps).unwrap();
+                let m = MonoTerm::from_exponents(&r, &exps).unwrap();
                 (r, p1, p2, c, m)
             })
     })
@@ -133,7 +133,7 @@ proptest! {
 
     #[test]
     fn mul_one_is_identity((r, f) in ring_poly1_strategy()) {
-        let one_mono = Monomial::one(&r);
+        let one_mono = MonoTerm::one(&r);
         let one = Poly::monomial(&r, Fr::one(), one_mono);
         prop_assert_eq!(f.mul(&one, &r), f.clone());
     }
@@ -175,7 +175,7 @@ proptest! {
     #[test]
     fn leading_of_product_is_product_of_leadings((r, f, g) in ring_poly2_strategy()) {
         if f.is_zero() || g.is_zero() { return Ok(()); }
-        // ADR-018: Poly::mul and Monomial::mul are infallible in
+        // ADR-018: Poly::mul and MonoTerm::mul are infallible in
         // release; ring_poly2_strategy's per-var cap (10) keeps sums
         // well within the 7-bit budget.
         let prod = f.mul(&g, &r);
@@ -224,7 +224,7 @@ proptest! {
 #[test]
 fn cyclic3_polynomials_are_canonical() {
     let r = Ring::<Fr>::new(3, MonoOrder::DegRevLex).unwrap();
-    let mono = |e: &[u32]| Monomial::from_exponents(&r, e).unwrap();
+    let mono = |e: &[u32]| MonoTerm::from_exponents(&r, e).unwrap();
     // f1 = x + y + z
     let f1 = Poly::from_terms(
         &r,
@@ -260,8 +260,8 @@ fn cyclic3_polynomials_are_canonical() {
 #[test]
 fn small_ideal_fixture() {
     let r = Ring::<Fr>::new(1, MonoOrder::DegRevLex).unwrap();
-    let one_mono = Monomial::one(&r);
-    let x = Monomial::from_exponents(&r, &[1]).unwrap();
+    let one_mono = MonoTerm::one(&r);
+    let x = MonoTerm::from_exponents(&r, &[1]).unwrap();
     // f = x - 1
     let f = Poly::from_terms(&r, vec![(Fr::one(), x), (-Fr::one(), one_mono)]);
     f.assert_canonical(&r);
@@ -272,7 +272,7 @@ fn small_ideal_fixture() {
 fn single_term_edge_cases() {
     let r = Ring::<Fr>::new(3, MonoOrder::DegRevLex).unwrap();
     // The multiplicative identity polynomial.
-    let one_poly = Poly::monomial(&r, Fr::one(), Monomial::one(&r));
+    let one_poly = Poly::monomial(&r, Fr::one(), MonoTerm::one(&r));
     one_poly.assert_canonical(&r);
     assert_eq!(one_poly.len(), 1);
     assert_eq!(one_poly.lm_deg(), 0);
@@ -284,7 +284,7 @@ fn single_term_edge_cases() {
     let x = Poly::monomial(
         &r,
         Fr::from(3u64),
-        Monomial::from_exponents(&r, &[1, 0, 0]).unwrap(),
+        MonoTerm::from_exponents(&r, &[1, 0, 0]).unwrap(),
     );
     x.assert_canonical(&r);
     assert_eq!(x.lm_coeff(), Fr::from(3u64));
@@ -308,7 +308,7 @@ fn drop_100k_term_poly_does_not_overflow_stack() {
     // Generate N distinct monomials by sweeping exponents in base-64
     // across four variables; sort descending so
     // `from_descending_terms_unchecked`'s contract holds.
-    let mut distinct: Vec<Monomial> = Vec::with_capacity(n);
+    let mut distinct: Vec<MonoTerm> = Vec::with_capacity(n);
     'outer: for d in 0u32..64 {
         for c in 0u32..64 {
             for b in 0u32..64 {
@@ -316,13 +316,13 @@ fn drop_100k_term_poly_does_not_overflow_stack() {
                     if distinct.len() >= n {
                         break 'outer;
                     }
-                    distinct.push(Monomial::from_exponents(&r, &[a, b, c, d]).unwrap());
+                    distinct.push(MonoTerm::from_exponents(&r, &[a, b, c, d]).unwrap());
                 }
             }
         }
     }
     distinct.sort_by(|x, y| y.cmp(x, &r));
-    let terms: Vec<(Fr, Monomial)> = distinct.into_iter().map(|m| (Fr::one(), m)).collect();
+    let terms: Vec<(Fr, MonoTerm)> = distinct.into_iter().map(|m| (Fr::one(), m)).collect();
     let p = Poly::from_descending_terms_unchecked(&r, terms);
     assert_eq!(p.len(), n);
     // Dropping the huge poly at scope exit must not overflow the

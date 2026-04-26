@@ -19,7 +19,7 @@
 use ark_bls12_381::Fr;
 use ark_ff::One;
 use ark_gb::gm;
-use ark_gb::{LSet, MonoOrder, Monomial, Poly, Ring, SBasis};
+use ark_gb::{LSet, MonoOrder, MonoTerm, Poly, Ring, SBasis};
 use proptest::prelude::*;
 
 const MAX_VARS: u32 = 4;
@@ -30,17 +30,17 @@ fn ring_strategy() -> impl Strategy<Value = Ring<Fr>> {
     (2u32..=MAX_VARS).prop_map(|n| Ring::<Fr>::new(n, MonoOrder::DegRevLex).unwrap())
 }
 
-fn lm_strategy(ring: Ring<Fr>) -> impl Strategy<Value = Monomial> {
+fn lm_strategy(ring: Ring<Fr>) -> impl Strategy<Value = MonoTerm> {
     let n = ring.nvars() as usize;
     prop::collection::vec(0u32..=MAX_EXP, n).prop_filter_map("need nonzero", move |e| {
         if e.iter().all(|&x| x == 0) {
             return None;
         }
-        Some(Monomial::from_exponents(&ring, &e).unwrap())
+        Some(MonoTerm::from_exponents(&ring, &e).unwrap())
     })
 }
 
-fn scenario_strategy() -> impl Strategy<Value = (Ring<Fr>, Vec<Monomial>, Monomial)> {
+fn scenario_strategy() -> impl Strategy<Value = (Ring<Fr>, Vec<MonoTerm>, MonoTerm)> {
     ring_strategy().prop_flat_map(|r| {
         let r1 = r.clone();
         let r2 = r.clone();
@@ -55,13 +55,13 @@ fn scenario_strategy() -> impl Strategy<Value = (Ring<Fr>, Vec<Monomial>, Monomi
 /// from the inputs so we don't need to check them separately.
 fn slow_enterpairs(
     ring: &Ring<Fr>,
-    lms: &[Monomial],
+    lms: &[MonoTerm],
     redundant: &[bool],
-    h_lm: &Monomial,
+    h_lm: &MonoTerm,
     h_idx: u32,
 ) -> Vec<(u32, u32)> {
     // Product criterion: coprime LMs are pruned.
-    let mut pairs: Vec<(u32, u32, Monomial)> = Vec::new();
+    let mut pairs: Vec<(u32, u32, MonoTerm)> = Vec::new();
     for (i, lm_i) in lms.iter().enumerate() {
         if redundant[i] {
             continue;
@@ -104,7 +104,7 @@ fn slow_enterpairs(
         .collect()
 }
 
-fn exp_coprime(ring: &Ring<Fr>, a: &Monomial, b: &Monomial) -> bool {
+fn exp_coprime(ring: &Ring<Fr>, a: &MonoTerm, b: &MonoTerm) -> bool {
     for i in 0..ring.nvars() {
         let ea = a.exponent(ring, i).unwrap();
         let eb = b.exponent(ring, i).unwrap();
@@ -133,7 +133,7 @@ proptest! {
         // Snapshot post-redundancy state of the pre-h basis. The
         // inserted h lives at index h_idx; the redundancy flags we
         // want are for indices 0..h_idx.
-        let lms_pre: Vec<Monomial> = (0..h_idx as usize)
+        let lms_pre: Vec<MonoTerm> = (0..h_idx as usize)
             .map(|i| {
                 *s.poly(i)
                     .leading()

@@ -2,7 +2,7 @@
 //!
 //! A [`Ring`] bundles the immutable data every polynomial operation needs:
 //! number of variables, monomial ordering, and the precomputed bitmasks 
-//! used by [`crate::monomial::Monomial`]'s mul and cmp routines. Rings are 
+//! used by [`crate::monomial::MonoTerm`]'s mul and cmp routines. Rings are 
 //! shared between threads via `Arc<Ring>` (see `~/project/docs/rust-bba-port-plan.md` 
 //! §6.1); the type is `Send + Sync` because it holds only immutable data.
 //!
@@ -35,7 +35,7 @@ pub const BITS_PER_VAR: u8 = 8;
 /// variable byte is the overflow guard (see ADR-005), so the usable
 /// range is [0, 127]. Per ADR-018, ring construction is responsible
 /// for ensuring no bba-step product exceeds this bound; release-build
-/// [`crate::monomial::Monomial::mul`] does not check.
+/// [`crate::monomial::MonoTerm::mul`] does not check.
 pub const MAX_VAR_EXP: u32 = 0x7F;
 
 /// Maximum number of variables supported by the 8-bit packing.
@@ -54,14 +54,14 @@ pub const MAX_VARS: u32 = 31;
 pub struct Ring<F: Field + Copy + Send + Sync> {
     /// Number of variables. `1 ≤ nvars ≤ MAX_VARS`.
     nvars: u32,
-    /// Monomial ordering. Currently always [`MonoOrder::DegRevLex`].
+    /// MonoTerm ordering. Currently always [`MonoOrder::DegRevLex`].
     ordering: MonoOrder,
     /// Phantom data for the coefficient field type.
     _marker: PhantomData<F>,
     /// Per-word overflow guard mask: bit 7 set in each variable byte
     /// slot, 0 elsewhere (top "total-degree" byte and any unused
-    /// low bytes). Used by `Monomial::assert_canonical` and by
-    /// `Monomial::mul`'s `debug_assert!` invariant (ADR-018). Release
+    /// low bytes). Used by `MonoTerm::assert_canonical` and by
+    /// `MonoTerm::mul`'s `debug_assert!` invariant (ADR-018). Release
     /// builds of `mul` no longer consult this mask — matching
     /// Singular's PDEBUG-gated check. See ADR-005 / ADR-018 in
     /// `~/ark_gb/docs/design-decisions.md`.
@@ -69,7 +69,7 @@ pub struct Ring<F: Field + Copy + Send + Sync> {
     /// Per-word XOR mask used to flip the degrevlex tie-break direction
     /// at compare time: `0x7F` in each variable byte slot, `0x00` in
     /// the total-degree byte and unused low bytes. XOR'd into packed
-    /// words before the lex compare in `Monomial::cmp_degrevlex`. With
+    /// words before the lex compare in `MonoTerm::cmp_degrevlex`. With
     /// direct exponent storage (ADR-005), the variable byte direction
     /// has to be flipped to encode "smaller exponent at the
     /// largest-index differing variable wins"; the top byte is left
@@ -85,10 +85,10 @@ impl<F: Field + Copy + Send + Sync> Ring<F> {
     /// `DegRevLex` is supported.
     ///
     /// **Caller contract (ADR-018, mirroring Singular's `rComplete`):**
-    /// the caller must ensure that every `Monomial::mul` product
+    /// the caller must ensure that every `MonoTerm::mul` product
     /// arising in the intended computation stays within
     /// [`MAX_VAR_EXP`] (= 127) per variable and within `u32::MAX`
-    /// in total degree. Release builds of [`crate::monomial::Monomial::mul`]
+    /// in total degree. Release builds of [`crate::monomial::MonoTerm::mul`]
     /// do not check this; violating the contract produces silent
     /// exponent corruption (matching Singular's release-mode
     /// `p_ExpVectorAdd` at
@@ -127,7 +127,7 @@ impl<F: Field + Copy + Send + Sync> Ring<F> {
         self.nvars
     }
 
-    /// Monomial ordering.
+    /// MonoTerm ordering.
     #[inline]
     pub fn ordering(&self) -> MonoOrder {
         self.ordering

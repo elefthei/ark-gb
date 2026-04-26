@@ -30,7 +30,7 @@ use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 use crate::field::Field;
-use crate::monomial::Monomial;
+use crate::monomial::MonoTerm;
 use crate::ring::Ring;
 
 use super::node_pool::{alloc, dealloc};
@@ -47,7 +47,7 @@ use super::node_pool::{alloc, dealloc};
 /// `!Sync` by default. We manually opt in:
 ///
 /// * **`Send`**: a `Poly` can be moved to another thread because its
-///   `Node`s hold only POD data (`F = u32`, `Monomial`, another
+///   `Node`s hold only POD data (`F = u32`, `MonoTerm`, another
 ///   raw pointer). The pool-owning thread distinction matters only
 ///   at allocation / deallocation time — reading the chain on a
 ///   different thread is sound.
@@ -99,10 +99,10 @@ unsafe impl<F: Field + Copy + Sync> Sync for Poly<F> {}
 /// `pub(super)` because [`super::node_pool`] constructs and destroys
 /// these through a thread-local allocator. The field layout is
 /// deliberate: `F` first (hot cache line for arithmetic), then
-/// `Monomial`, then the `next` pointer.
+/// `MonoTerm`, then the `next` pointer.
 pub(super) struct Node<F> {
     pub(super) coeff: F,
-    pub(super) mono: Monomial,
+    pub(super) mono: MonoTerm,
     pub(super) next: Option<NonNull<Node<F>>>,
 }
 
@@ -114,7 +114,7 @@ impl<F: Field + Copy + std::fmt::Debug> std::fmt::Debug for Poly<F> {
             .field("lm_sev", &self.lm_sev)
             .field("lm_deg", &self.lm_deg);
         // Walk and collect terms for debugging.
-        let mut terms: Vec<(F, &Monomial)> = Vec::with_capacity(self.len);
+        let mut terms: Vec<(F, &MonoTerm)> = Vec::with_capacity(self.len);
         let mut node = self.head;
         while let Some(n) = node {
             // SAFETY: nodes reachable from `head` are live by the
@@ -213,7 +213,7 @@ impl<F: Field + Copy> Poly<F> {
 
     /// A polynomial with a single term `c * m`. Returns the zero
     /// polynomial if `c == 0`. `c` must already be reduced mod `p`.
-    pub fn monomial(ring: &Ring<F>, c: F, m: Monomial) -> Self {
+    pub fn monomial(ring: &Ring<F>, c: F, m: MonoTerm) -> Self {
         let _ = ring;
         if c.is_zero() {
             return Self::zero();
@@ -237,7 +237,7 @@ impl<F: Field + Copy> Poly<F> {
     /// counterpart for the caller contract.
     pub fn from_descending_terms_unchecked(
         ring: &Ring<F>,
-        terms: Vec<(F, Monomial)>,
+        terms: Vec<(F, MonoTerm)>,
     ) -> Self {
         if terms.is_empty() {
             return Self::zero();
@@ -246,11 +246,11 @@ impl<F: Field + Copy> Poly<F> {
 
         // Debug-only validation pass. Separate from the construction
         // pass because the borrow checker gets confused if we both
-        // hold `prev_mono: &Monomial` and append into the chain in the
+        // hold `prev_mono: &MonoTerm` and append into the chain in the
         // same loop.
         #[cfg(debug_assertions)]
         {
-            let mut prev_mono: Option<&Monomial> = None;
+            let mut prev_mono: Option<&MonoTerm> = None;
             for (c, m) in terms.iter() {
                 debug_assert!(!c.is_zero(), "from_descending_terms_unchecked: zero coeff");
                 if let Some(prev) = prev_mono {
@@ -293,7 +293,7 @@ impl<F: Field + Copy> Poly<F> {
     pub fn from_descending_parallel_unchecked(
         ring: &Ring<F>,
         coeffs: Vec<F>,
-        terms: Vec<Monomial>,
+        terms: Vec<MonoTerm>,
     ) -> Self {
         debug_assert_eq!(coeffs.len(), terms.len());
         if terms.is_empty() {
@@ -336,7 +336,7 @@ impl<F: Field + Copy> Poly<F> {
 
     /// Build from unsorted terms. Sorts descending, de-dupes via sum,
     /// drops zeros. Semantics match `poly_vec::Poly::from_terms`.
-    pub fn from_terms(ring: &Ring<F>, terms: Vec<(F, Monomial)>) -> Self {
+    pub fn from_terms(ring: &Ring<F>, terms: Vec<(F, MonoTerm)>) -> Self {
         let mut terms = terms;
         terms.sort_by(|a, b| b.1.cmp(&a.1, ring));
 
@@ -344,7 +344,7 @@ impl<F: Field + Copy> Poly<F> {
         // mod p, drop zeros. We do this into a Vec first to keep the
         // merge logic straightforward, then chain the survivors into
         // the linked list.
-        let mut surviving: Vec<(F, Monomial)> = Vec::with_capacity(terms.len());
+        let mut surviving: Vec<(F, MonoTerm)> = Vec::with_capacity(terms.len());
         for (c, m) in terms {
             if c.is_zero() {
                 continue;
@@ -398,7 +398,7 @@ impl<F: Field + Copy> Poly<F> {
     }
 
     /// Iterate over `(coeff, &monomial)` pairs in descending order.
-    pub fn iter(&self) -> impl Iterator<Item = (F, &Monomial)> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = (F, &MonoTerm)> + '_ {
         let mut node = self.head;
         std::iter::from_fn(move || {
             let n = node?;
@@ -411,7 +411,7 @@ impl<F: Field + Copy> Poly<F> {
     }
 
     /// Leading term `(coeff, &monomial)`, or `None` if zero.
-    pub fn leading(&self) -> Option<(F, &Monomial)> {
+    pub fn leading(&self) -> Option<(F, &MonoTerm)> {
         self.head.map(|h| {
             // SAFETY: `h` is a live leading node bounded by `self`.
             let r = unsafe { h.as_ref() };
@@ -626,7 +626,7 @@ impl<F: Field + Copy> Poly<F> {
     /// Multiply every monomial by `m`. Per ADR-018, the caller's ring
     /// construction must ensure no product overflows the 7-bit
     /// per-variable budget; release builds do not check.
-    pub fn shift(&self, m: &Monomial, ring: &Ring<F>) -> Poly<F> {
+    pub fn shift(&self, m: &MonoTerm, ring: &Ring<F>) -> Poly<F> {
         if self.is_zero() {
             return Self::zero();
         }
@@ -665,7 +665,7 @@ impl<F: Field + Copy> Poly<F> {
         if self.is_zero() || other.is_zero() {
             return Self::zero();
         }
-        let mut acc: Vec<(F, Monomial)> = Vec::with_capacity(self.len * other.len);
+        let mut acc: Vec<(F, MonoTerm)> = Vec::with_capacity(self.len * other.len);
         for (ca, ma) in self.iter() {
             for (cb, mb) in other.iter() {
                 let m = ma.mul(mb, ring);
@@ -684,7 +684,7 @@ impl<F: Field + Copy> Poly<F> {
     /// Per ADR-018, the caller's ring construction must guarantee
     /// that every `m * q[i]` product stays in-range; release builds
     /// do not check.
-    pub fn sub_mul_term(&self, c: F, m: &Monomial, q: &Poly<F>, ring: &Ring<F>) -> Poly<F> {
+    pub fn sub_mul_term(&self, c: F, m: &MonoTerm, q: &Poly<F>, ring: &Ring<F>) -> Poly<F> {
         if c.is_zero() || q.is_zero() {
             return self.clone();
         }
@@ -798,7 +798,7 @@ impl<F: Field + Copy> Poly<F> {
     pub fn sub_mm_mult_qq_consuming(
         mut self,
         c: F,
-        m: &Monomial,
+        m: &MonoTerm,
         q: &Poly<F>,
         ring: &Ring<F>,
     ) -> Poly<F> {
@@ -941,7 +941,7 @@ impl<F: Field + Copy> Poly<F> {
     /// Panic if any internal invariant is violated.
     pub fn assert_canonical(&self, ring: &Ring<F>) {
         let mut node = self.head;
-        let mut prev: Option<&Monomial> = None;
+        let mut prev: Option<&MonoTerm> = None;
         let mut count: usize = 0;
         while let Some(n) = node {
             // SAFETY: live node.
@@ -1006,7 +1006,7 @@ impl<'a, F: Field + Copy> std::fmt::Debug for PolyCursor<'a, F> {
 impl<'a, F: Field + Copy> PolyCursor<'a, F> {
     /// Current term `(coeff, &monomial)`, or `None` if exhausted.
     #[inline]
-    pub fn term(&self) -> Option<(F, &'a Monomial)> {
+    pub fn term(&self) -> Option<(F, &'a MonoTerm)> {
         self.node.map(|n| {
             // SAFETY: the cursor's lifetime `'a` is tied to the
             // borrowed `Poly`; its chain stays live for `'a`.
@@ -1306,8 +1306,8 @@ mod tests {
         Ring::<F>::new(nvars, MonoOrder::DegRevLex).unwrap()
     }
 
-    fn mono(r: &Ring<F>, e: &[u32]) -> Monomial {
-        Monomial::from_exponents(r, e).unwrap()
+    fn mono(r: &Ring<F>, e: &[u32]) -> MonoTerm {
+        MonoTerm::from_exponents(r, e).unwrap()
     }
 
     #[test]
@@ -1770,7 +1770,7 @@ mod tests {
         let r = mk_ring(4, 32003);
         let n: usize = 100_000;
 
-        let mut distinct: Vec<Monomial> = Vec::with_capacity(n);
+        let mut distinct: Vec<MonoTerm> = Vec::with_capacity(n);
         'outer: for d in 0u32..64 {
             for c in 0u32..64 {
                 for b in 0u32..64 {
@@ -1785,7 +1785,7 @@ mod tests {
         }
         // Sort descending under the ring's ordering.
         distinct.sort_by(|x, y| y.cmp(x, &r));
-        let terms: Vec<(F, Monomial)> =
+        let terms: Vec<(F, MonoTerm)> =
             distinct.into_iter().map(|m| (F::from(1u64), m)).collect();
         let p = Poly::from_descending_terms_unchecked(&r, terms);
         assert_eq!(p.len(), n);

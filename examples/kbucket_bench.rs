@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ark_bls12_381::Fr;
-use ark_gb::{KBucket, MonoOrder, Monomial, Poly, Ring};
+use ark_gb::{KBucket, MonoOrder, MonoTerm, Poly, Ring};
 
 /// Deterministic LCG used to generate all random data.
 struct Lcg(u64);
@@ -57,19 +57,19 @@ fn random_poly(ring: &Ring<Fr>, rng: &mut Lcg, nterms: usize, max_exp: u32) -> P
         // fields are large enough that any nonzero u64 is fine.
         let c_u64 = (rng.next() % (u32::MAX as u64 - 1)) + 1;
         let c = Fr::from(c_u64);
-        let m = Monomial::from_exponents(ring, &exps).unwrap();
+        let m = MonoTerm::from_exponents(ring, &exps).unwrap();
         pairs.push((c, m));
     }
     Poly::from_terms(ring, pairs)
 }
 
-fn random_mono(ring: &Ring<Fr>, rng: &mut Lcg, max_exp: u32) -> Monomial {
+fn random_mono(ring: &Ring<Fr>, rng: &mut Lcg, max_exp: u32) -> MonoTerm {
     let n = ring.nvars() as usize;
     let mut exps = vec![0u32; n];
     for slot in exps.iter_mut() {
         *slot = ((rng.next() >> 32) as u32) % (max_exp + 1);
     }
-    Monomial::from_exponents(ring, &exps).unwrap()
+    MonoTerm::from_exponents(ring, &exps).unwrap()
 }
 
 fn main() {
@@ -79,7 +79,7 @@ fn main() {
     let mut rng = Lcg::new(0xDEADBEEF);
     let seed = random_poly(&ring, &mut rng, 200, 3);
     let reducer_count = 200;
-    let mut reducers: Vec<(Monomial, Fr, Poly<Fr>)> = Vec::with_capacity(reducer_count);
+    let mut reducers: Vec<(MonoTerm, Fr, Poly<Fr>)> = Vec::with_capacity(reducer_count);
     for _ in 0..reducer_count {
         // Small multipliers so the product fits in the 8-bit budget.
         let m = random_mono(&ring, &mut rng, 2);

@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use ark_bls12_381::Fr;
 use ark_ff::One;
-use ark_gb::monomial::Monomial;
+use ark_gb::monomial::MonoTerm;
 use ark_gb::ordering::MonoOrder;
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
@@ -57,16 +57,16 @@ pub fn elim_ring(nvars: usize) -> Arc<Ring<Fr>> {
     )
 }
 
-fn unit_mono(ring: &Ring<Fr>) -> Monomial {
+fn unit_mono(ring: &Ring<Fr>) -> MonoTerm {
     let nvars = ring.nvars() as usize;
-    Monomial::from_exponents(ring, &vec![0u32; nvars]).unwrap()
+    MonoTerm::from_exponents(ring, &vec![0u32; nvars]).unwrap()
 }
 
-fn var_mono(ring: &Ring<Fr>, i: usize) -> Monomial {
+fn var_mono(ring: &Ring<Fr>, i: usize) -> MonoTerm {
     let nvars = ring.nvars() as usize;
     let mut e = vec![0u32; nvars];
     e[i] = 1;
-    Monomial::from_exponents(ring, &e).unwrap()
+    MonoTerm::from_exponents(ring, &e).unwrap()
 }
 
 // ---------------------------------------------------------------------------

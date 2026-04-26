@@ -16,7 +16,7 @@
 //! contract.
 
 use crate::field::Field;
-use crate::monomial::Monomial;
+use crate::monomial::MonoTerm;
 use crate::poly::Poly;
 use crate::ring::Ring;
 
@@ -42,11 +42,11 @@ pub struct SBasis<F: Field + Copy> {
     /// `lms[i] == polys[i].leading().unwrap().1.clone()`. Used by
     /// the divisor sweep in `bba::find_divisor_idx` (ADR-010) to
     /// avoid the `Vec<Box<Poly>>` pointer chase per probed
-    /// candidate. Each `Monomial` is 48 bytes, so for ~3000-element
+    /// candidate. Each `MonoTerm` is 48 bytes, so for ~3000-element
     /// staging bases the cache totals ~144 KB — fits in L2,
     /// streams cleanly during the sweep. See ADR-010 in
     /// `~/ark_gb/docs/design-decisions.md`.
-    lms: Vec<Monomial>,
+    lms: Vec<MonoTerm>,
     /// Leading total degrees. `lm_degs[i] == polys[i].lm_deg()`.
     lm_degs: Vec<u32>,
     /// Redundancy flags. `redundant[i] == true` means `polys[i]`'s
@@ -114,7 +114,7 @@ impl<F: Field + Copy> SBasis<F> {
     /// Slice of cached leading monomials. Length equals [`len`](Self::len).
     /// `lms()[i] == polys[i].leading().unwrap().1.clone()`. ADR-010.
     #[inline]
-    pub fn lms(&self) -> &[Monomial] {
+    pub fn lms(&self) -> &[MonoTerm] {
         &self.lms
     }
 
@@ -323,15 +323,15 @@ impl<F: Field + Copy> SBasis<F> {
 }
 
 /// Helper: `m_lm.divides(other_lm)` with sev pre-filter. Lives on
-/// `Monomial` logically but we re-implement it here so callers that
+/// `MonoTerm` logically but we re-implement it here so callers that
 /// already hold both `sev` values don't pay the hash-map-friendly
-/// `Monomial::divides` walk until the sev check passes.
+/// `MonoTerm::divides` walk until the sev check passes.
 #[inline]
 pub fn divides_with_sev<F: Field + Copy + Send + Sync>(
     m_sev: u64,
     other_sev: u64,
-    m: &Monomial,
-    other: &Monomial,
+    m: &MonoTerm,
+    other: &MonoTerm,
     ring: &Ring<F>,
 ) -> bool {
     if (m_sev & !other_sev) != 0 {
@@ -351,8 +351,8 @@ mod tests {
         Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap()
     }
 
-    fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
-        Monomial::from_exponents(r, e).unwrap()
+    fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+        MonoTerm::from_exponents(r, e).unwrap()
     }
 
     fn poly1(r: &Ring<Fr>, c: Fr, e: &[u32]) -> Poly<Fr> {

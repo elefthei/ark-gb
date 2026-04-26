@@ -14,7 +14,7 @@ use std::time::Instant;
 use ark_bls12_381::Fr;
 use ark_ff::One;
 use ark_gb::gm;
-use ark_gb::{LSet, MonoOrder, Monomial, Pair, Poly, Ring, SBasis};
+use ark_gb::{LSet, MonoOrder, MonoTerm, Pair, Poly, Ring, SBasis};
 
 const NVARS: u32 = 6;
 
@@ -37,7 +37,7 @@ impl Lcg {
     }
 }
 
-fn random_lm(r: &Ring<Fr>, rng: &mut Lcg) -> Monomial {
+fn random_lm(r: &Ring<Fr>, rng: &mut Lcg) -> MonoTerm {
     let n = r.nvars() as usize;
     let mut exps = vec![0u32; n];
     // Sparse: 2 variables with small exponents.
@@ -48,7 +48,7 @@ fn random_lm(r: &Ring<Fr>, rng: &mut Lcg) -> Monomial {
             exps[k] = 6;
         }
     }
-    Monomial::from_exponents(r, &exps).unwrap()
+    MonoTerm::from_exponents(r, &exps).unwrap()
 }
 
 fn bench_enterpairs() {
@@ -86,7 +86,7 @@ fn bench_enterpairs() {
 fn bench_lset_pop_reinsert() {
     let r = mk_ring();
     let mut l = LSet::new();
-    let lcm = Monomial::from_exponents(&r, &vec![1u32; r.nvars() as usize]).unwrap();
+    let lcm = MonoTerm::from_exponents(&r, &vec![1u32; r.nvars() as usize]).unwrap();
     // Seed.
     for k in 0u32..256u32 {
         l.insert(Pair::new(0, k + 1, lcm, k % 17, k as u64));

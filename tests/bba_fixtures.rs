@@ -14,13 +14,13 @@ use std::sync::Arc;
 use ark_bls12_381::Fr;
 use ark_ff::{One, Zero};
 use ark_gb::compute_gb;
-use ark_gb::monomial::Monomial;
+use ark_gb::monomial::MonoTerm;
 use ark_gb::ordering::MonoOrder;
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 
 /// Parser state for a single polynomial line. The parser scans left
-/// to right emitting `(coeff, Monomial)` pairs, then hands them to
+/// to right emitting `(coeff, MonoTerm)` pairs, then hands them to
 /// `Poly::from_terms`.
 struct LineParser<'a> {
     src: &'a [u8],
@@ -171,7 +171,7 @@ impl<'a> LineParser<'a> {
     }
 
     fn parse(mut self) -> Poly<Fr> {
-        let mut terms: Vec<(Fr, Monomial)> = Vec::new();
+        let mut terms: Vec<(Fr, MonoTerm)> = Vec::new();
         let mut first = true;
         loop {
             match self.read_term(first) {
@@ -182,7 +182,7 @@ impl<'a> LineParser<'a> {
                     let mag_fr = Fr::from(mag);
                     let signed = if sign < 0 { -mag_fr } else { mag_fr };
                     if !signed.is_zero() {
-                        let m = Monomial::from_exponents(self.ring, &exps).unwrap();
+                        let m = MonoTerm::from_exponents(self.ring, &exps).unwrap();
                         terms.push((signed, m));
                     }
                 }
@@ -196,8 +196,8 @@ fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
     Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
 }
 
-fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
-    Monomial::from_exponents(r, e).unwrap()
+fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+    MonoTerm::from_exponents(r, e).unwrap()
 }
 
 /// Run `compute_gb` and validate the output via Buchberger's criterion.
@@ -407,7 +407,7 @@ fn parser_round_trips_monomial_forms() {
     let b = LineParser::new("x^2*y+3*x*y^2-z^3+1", &r, &["x", "y", "z"]).parse();
     assert_eq!(a, b);
     // Explicit canonical form.
-    let m = |e: &[u32]| Monomial::from_exponents(&r, e).unwrap();
+    let m = |e: &[u32]| MonoTerm::from_exponents(&r, e).unwrap();
     let expected = Poly::from_terms(
         &r,
         vec![

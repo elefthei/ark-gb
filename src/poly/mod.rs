@@ -5,7 +5,7 @@
 //! `linked_list_poly` Cargo feature:
 //!
 //! * **Default** — [`poly_vec`](crate::poly::poly_vec): parallel
-//!   `Vec<Coeff>` + `Vec<Monomial>` with a `head` cursor. Matches
+//!   `Vec<Coeff>` + `Vec<MonoTerm>` with a `head` cursor. Matches
 //!   mathicgb's flat-array shape; ADR-001 has the motivation and the
 //!   staging-5101449 profile evidence (62.6 % memmove pre-fix).
 //! * **`--features linked_list_poly`** — [`poly_list`](crate::poly::poly_list):

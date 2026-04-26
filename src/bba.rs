@@ -351,7 +351,7 @@ pub fn reduce_lobject_heap<F: Field + Copy + Send + Sync>(
     let mut h = ReducerHeap::new(Arc::clone(ring), initial_sugar);
     h.push_reducer(Reducer {
         poly: &initial_poly,
-        multiplier: crate::monomial::Monomial::one(ring),
+        multiplier: crate::monomial::MonoTerm::one(ring),
         coeff: F::one(),
         cursor: initial_poly.cursor(),
         sugar: initial_sugar,
@@ -386,7 +386,7 @@ pub fn reduce_lobject_heap<F: Field + Copy + Send + Sync>(
 fn find_divisor_idx<F: Field + Copy + Send + Sync>(
     s_basis: &SBasis<F>,
     lm_sev: u64,
-    lm: &crate::monomial::Monomial,
+    lm: &crate::monomial::MonoTerm,
     ring: &Ring<F>,
 ) -> Option<usize> {
     let sevs = s_basis.sevs();
@@ -405,7 +405,7 @@ fn find_divisor_idx<F: Field + Copy + Send + Sync>(
         }
         // Sev passes; now check redundant flag and the actual divides.
         // ADR-010: read the leading monomial from the lms cache
-        // (flat Vec<Monomial>, contiguous) instead of dereferencing
+        // (flat Vec<MonoTerm>, contiguous) instead of dereferencing
         // s_basis.poly(idx) (a Box<Poly> with separately-allocated
         // memory). Eliminates the L1/L2 miss that the v7 perf annotate
         // showed at 11 % of within-function cycles in
@@ -504,7 +504,7 @@ fn reduce_tail<F: Field + Copy + Send + Sync>(
         return tail;
     }
     let mut bucket = KBucket::from_poly(Arc::clone(ring), tail);
-    let mut done: Vec<(F, crate::monomial::Monomial)> = Vec::new();
+    let mut done: Vec<(F, crate::monomial::MonoTerm)> = Vec::new();
 
     // clippy::while_let_loop would suggest a `while let Some((c,
     // m_ref)) = bucket.leading() { .. }`, but `bucket.leading()`
@@ -583,11 +583,11 @@ fn reduce_tail<F: Field + Copy + Send + Sync>(
 /// take the fast path and skip the sort.
 fn prepend_leading<F: Field + Copy + Send + Sync>(
     lc: F,
-    lm: &crate::monomial::Monomial,
+    lm: &crate::monomial::MonoTerm,
     tail: Poly<F>,
     ring: &Ring<F>,
 ) -> Poly<F> {
-    let mut terms: Vec<(F, crate::monomial::Monomial)> = Vec::with_capacity(tail.len() + 1);
+    let mut terms: Vec<(F, crate::monomial::MonoTerm)> = Vec::with_capacity(tail.len() + 1);
     terms.push((lc, *lm));
     for (c, m) in tail.iter() {
         terms.push((c, *m));
@@ -598,7 +598,7 @@ fn prepend_leading<F: Field + Copy + Send + Sync>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::monomial::Monomial;
+    use crate::monomial::MonoTerm;
     use crate::ordering::MonoOrder;
     use ark_bls12_381::Fr;
     use ark_ff::One;
@@ -607,8 +607,8 @@ mod tests {
         Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
     }
 
-    fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
-        Monomial::from_exponents(r, e).unwrap()
+    fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+        MonoTerm::from_exponents(r, e).unwrap()
     }
 
     #[test]
@@ -783,7 +783,7 @@ mod tests {
     #[test]
     fn constant_input_gives_unit_gb() {
         let r = mk_ring(3);
-        let one = Poly::monomial(&r, Fr::one(), Monomial::one(&r));
+        let one = Poly::monomial(&r, Fr::one(), MonoTerm::one(&r));
         let gb = compute_gb(Arc::clone(&r), vec![one.clone()]);
         assert_eq!(gb.len(), 1);
         assert_eq!(gb[0], one);
@@ -792,12 +792,12 @@ mod tests {
     #[test]
     fn constant_nonone_input_gives_unit_gb() {
         let r = mk_ring(3);
-        let three = Poly::monomial(&r, Fr::from(3u64), Monomial::one(&r));
+        let three = Poly::monomial(&r, Fr::from(3u64), MonoTerm::one(&r));
         let gb = compute_gb(Arc::clone(&r), vec![three]);
         assert_eq!(gb.len(), 1);
         // Must have been made monic.
         assert_eq!(gb[0].lm_coeff(), Fr::one());
-        assert_eq!(*gb[0].leading().unwrap().1, Monomial::one(&r));
+        assert_eq!(*gb[0].leading().unwrap().1, MonoTerm::one(&r));
     }
 
     #[test]

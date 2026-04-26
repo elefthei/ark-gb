@@ -344,7 +344,7 @@ impl<F: Field + Copy + Send + Sync> Computation<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::monomial::Monomial;
+    use crate::monomial::MonoTerm;
     use crate::ordering::MonoOrder;
     use ark_bls12_381::Fr;
     use ark_ff::One;
@@ -360,12 +360,12 @@ mod tests {
         let p1 = Arc::new(Poly::monomial(
             &r,
             Fr::one(),
-            Monomial::from_exponents(&r, &[2, 0, 0]).unwrap(),
+            MonoTerm::from_exponents(&r, &[2, 0, 0]).unwrap(),
         ));
         let p2 = Arc::new(Poly::monomial(
             &r,
             Fr::one(),
-            Monomial::from_exponents(&r, &[0, 1, 0]).unwrap(),
+            MonoTerm::from_exponents(&r, &[0, 1, 0]).unwrap(),
         ));
         let i1 = b.push(p1, 0);
         let i2 = b.push(p2, 1);
@@ -383,7 +383,7 @@ mod tests {
         let p = Arc::new(Poly::monomial(
             &r,
             Fr::one(),
-            Monomial::from_exponents(&r, &[1, 0, 0]).unwrap(),
+            MonoTerm::from_exponents(&r, &[1, 0, 0]).unwrap(),
         ));
         b.push(p, 0);
         assert!(!b.is_redundant(0));

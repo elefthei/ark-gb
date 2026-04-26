@@ -33,7 +33,7 @@
 //! retirement of the geobucket reducer.
 
 use crate::field::Field;
-use crate::monomial::Monomial;
+use crate::monomial::MonoTerm;
 use crate::poly::{Poly, PolyCursor};
 use crate::ring::Ring;
 use std::collections::BinaryHeap;
@@ -63,7 +63,7 @@ pub struct Reducer<'a, F: Field + Copy> {
     pub poly: &'a Poly<F>,
     /// Multiplier monomial `m_i = lm(LObject) / lm(g_i)` at the
     /// time this reducer was added.
-    pub multiplier: Monomial,
+    pub multiplier: MonoTerm,
     /// Pre-negated multiplier coefficient
     /// `c_i = -leader_coeff(LObject) / lc(g_i)`. With monic
     /// basis elements `lc(g_i) == 1`, this simplifies to
@@ -132,7 +132,7 @@ impl Ord for HeapNode {
     /// Lex compare on the cached `cmp_key`, MSB-word first.
     /// Result is the degrevlex order on the underlying monomials
     /// (because `cmp_key` was constructed with the ring's
-    /// `cmp_flip_mask` applied — see `Monomial::cmp_degrevlex`).
+    /// `cmp_flip_mask` applied — see `MonoTerm::cmp_degrevlex`).
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         for i in (0..4).rev() {
             match self.cmp_key[i].cmp(&other.cmp_key[i]) {
@@ -297,7 +297,7 @@ impl<'a, F: Field + Copy + Send + Sync> ReducerHeap<'a, F> {
     ///
     /// Per ADR-018, the caller's ring construction must ensure
     /// `multiplier * poly.terms[index]` products stay in-range;
-    /// release builds of `Monomial::mul` do not check.
+    /// release builds of `MonoTerm::mul` do not check.
     fn push_current_term(&mut self, reducer_idx: usize) {
         let r = &self.reducers[reducer_idx];
         let Some((_c, m)) = r.cursor.term() else {
@@ -345,9 +345,9 @@ impl<'a, F: Field + Copy + Send + Sync> ReducerHeap<'a, F> {
     /// LObject's sugar metadata.
     pub fn reduce_to_normal_form<DF>(mut self, mut find_divisor: DF) -> (Poly<F>, u32)
     where
-        DF: FnMut(&Monomial) -> Option<(&'a Poly<F>, u32)>,
+        DF: FnMut(&MonoTerm) -> Option<(&'a Poly<F>, u32)>,
     {
-        let mut survivor_terms: Vec<(F, Monomial)> = Vec::new();
+        let mut survivor_terms: Vec<(F, MonoTerm)> = Vec::new();
 
         while let Some((c, m)) = self.pop_with_cancellation() {
             match find_divisor(&m) {
@@ -426,7 +426,7 @@ impl<'a, F: Field + Copy + Send + Sync> ReducerHeap<'a, F> {
     /// is advanced past its emitted term. If the resulting sum is
     /// zero, the chain cancelled and we recurse on the next leader;
     /// if non-zero, that's the leader the caller wants.
-    pub fn pop_with_cancellation(&mut self) -> Option<(F, Monomial)> {
+    pub fn pop_with_cancellation(&mut self) -> Option<(F, MonoTerm)> {
         loop {
             let max_node = self.heap.pop()?;
             // Collect the contributing reducer indices and compute
@@ -713,11 +713,11 @@ mod tests {
 
     // ----- Phase 3: push_reducer + pop_with_cancellation -----
 
-    use crate::monomial::Monomial;
+    use crate::monomial::MonoTerm;
     use crate::poly::Poly;
 
-    fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
-        Monomial::from_exponents(r, e).unwrap()
+    fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+        MonoTerm::from_exponents(r, e).unwrap()
     }
 
     /// Helper: collect the full output of pop_with_cancellation
@@ -725,7 +725,7 @@ mod tests {
     /// reducer to completion" pattern in tests.
     fn drain_with_cancellation<'a>(
         h: &mut ReducerHeap<'a, Fr>,
-    ) -> Vec<(Fr, Monomial)> {
+    ) -> Vec<(Fr, MonoTerm)> {
         let mut out = Vec::new();
         while let Some(pair) = h.pop_with_cancellation() {
             out.push(pair);
@@ -739,7 +739,7 @@ mod tests {
         // poly. Drain pop_with_cancellation; should emit each term
         // in descending order with coeff matching the source.
         let r = mk_ring(3);
-        let one = Monomial::one(&r);
+        let one = MonoTerm::one(&r);
         let p = Poly::from_terms(
             &r,
             vec![
@@ -782,7 +782,7 @@ mod tests {
                 (Fr::from(3u64), mono(&r, &[0, 1, 0])),
             ],
         );
-        let one = Monomial::one(&r);
+        let one = MonoTerm::one(&r);
         let neg_one = -Fr::one();
 
         let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
@@ -822,7 +822,7 @@ mod tests {
             &r,
             vec![(Fr::from(2u64), mono(&r, &[2, 0, 0])), (Fr::from(7u64), mono(&r, &[0, 0, 1]))],
         );
-        let one = Monomial::one(&r);
+        let one = MonoTerm::one(&r);
         let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
         h.push_reducer(Reducer {
             poly: &p,
@@ -887,11 +887,11 @@ mod tests {
 
             // Reference: Poly::add via the geobucket-friendly merge.
             let want = p.add(&q, &r);
-            let want_terms: Vec<(Fr, Monomial)> =
+            let want_terms: Vec<(Fr, MonoTerm)> =
                 want.iter().map(|(c, m)| (c, *m)).collect();
 
             // Heap reducer: 1*p + 1*q.
-            let one = Monomial::one(&r);
+            let one = MonoTerm::one(&r);
             let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
             h.push_reducer(Reducer {
                 poly: &p,
@@ -939,7 +939,7 @@ mod tests {
                 // Irreducible leader: pop it off, recurse on the tail.
                 // Easier: just emit the head into a survivor and
                 // continue with the tail.
-                let mut survivor_terms: Vec<(Fr, Monomial)> = Vec::new();
+                let mut survivor_terms: Vec<(Fr, MonoTerm)> = Vec::new();
                 let mut working = current;
                 'outer: loop {
                     if working.is_zero() {
@@ -987,7 +987,7 @@ mod tests {
         sugars: &[u32],
     ) -> Poly<Fr> {
         let mut h = ReducerHeap::<Fr>::new(Arc::clone(&ring), f.lm_deg());
-        let one = Monomial::one(&ring);
+        let one = MonoTerm::one(&ring);
         h.push_reducer(Reducer {
             poly: f,
             multiplier: one,
@@ -1182,7 +1182,7 @@ mod tests {
     fn sugar_is_max_over_pushed_reducers() {
         let r = mk_ring(2);
         let p = Poly::from_terms(&r, vec![(Fr::one(), mono(&r, &[1, 0]))]);
-        let one = Monomial::one(&r);
+        let one = MonoTerm::one(&r);
         let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 7);
         assert_eq!(h.sugar(), 7);
         h.push_reducer(Reducer {

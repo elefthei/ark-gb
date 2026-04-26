@@ -7,7 +7,7 @@
 
 use ark_bls12_381::Fr;
 use ark_ff::One;
-use ark_gb::{MonoOrder, Monomial, Poly, Ring, SBasis};
+use ark_gb::{MonoOrder, MonoTerm, Poly, Ring, SBasis};
 use proptest::prelude::*;
 
 const MAX_VARS: u32 = 4;
@@ -18,16 +18,16 @@ fn ring_strategy() -> impl Strategy<Value = Ring<Fr>> {
     (1u32..=MAX_VARS).prop_map(|n| Ring::<Fr>::new(n, MonoOrder::DegRevLex).unwrap())
 }
 
-fn lm_strategy(ring: Ring<Fr>) -> impl Strategy<Value = Monomial> {
+fn lm_strategy(ring: Ring<Fr>) -> impl Strategy<Value = MonoTerm> {
     let n = ring.nvars() as usize;
     prop::collection::vec(0u32..=MAX_EXP, n)
-        .prop_map(move |e| Monomial::from_exponents(&ring, &e).unwrap())
+        .prop_map(move |e| MonoTerm::from_exponents(&ring, &e).unwrap())
 }
 
 /// A basis-worth of single-term polynomials (one term = its LM).
 /// Single terms are enough to study redundancy — `SBasis::insert`
 /// reads only the leading monomial.
-fn basis_strategy() -> impl Strategy<Value = (Ring<Fr>, Vec<Monomial>)> {
+fn basis_strategy() -> impl Strategy<Value = (Ring<Fr>, Vec<MonoTerm>)> {
     ring_strategy().prop_flat_map(|r| {
         let lms = prop::collection::vec(lm_strategy(r.clone()), 1..=MAX_BASIS);
         lms.prop_map(move |v| (r.clone(), v))
@@ -36,7 +36,7 @@ fn basis_strategy() -> impl Strategy<Value = (Ring<Fr>, Vec<Monomial>)> {
 
 /// O(n²) reference: for each element `i`, it is redundant iff some
 /// later element `j > i` has `lm(j) | lm(i)`.
-fn naive_redundant(ring: &Ring<Fr>, lms: &[Monomial]) -> Vec<bool> {
+fn naive_redundant(ring: &Ring<Fr>, lms: &[MonoTerm]) -> Vec<bool> {
     let n = lms.len();
     let mut red = vec![false; n];
     // Replicate the insert-order incremental logic: when element

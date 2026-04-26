@@ -1,6 +1,6 @@
 //! Packed-exponent monomials.
 //!
-//! A [`Monomial`] represents `x_0^{e_0} * x_1^{e_1} * ... * x_{n-1}^{e_{n-1}}`
+//! A [`MonoTerm`] represents `x_0^{e_0} * x_1^{e_1} * ... * x_{n-1}^{e_{n-1}}`
 //! for a ring with `nvars = n`. Exponents are packed into four `u64`
 //! words — 32 bytes total — at 8 bytes per slot, of which the low 7
 //! bits hold the exponent (max value 127) and bit 7 is reserved as an
@@ -30,7 +30,7 @@
 //!
 //! ## Multiplication and overflow detection
 //!
-//! `Monomial::mul` is a plain word-wise wrapping-add of the four
+//! `MonoTerm::mul` is a plain word-wise wrapping-add of the four
 //! packed words (LLVM auto-vectorises this into one `vpaddq`). Because
 //! each variable byte's value is ≤ 127, byte-wise sums fit in 8 bits
 //! and no carry can propagate from one variable byte into the next —
@@ -92,7 +92,7 @@ const _BITS_PER_VAR_IS_8: () = assert!(BITS_PER_VAR == 8);
 /// down to anyway. Hot paths like `Poly::sub_mul_term`'s two-pointer
 /// merge avoid surfacing `clone()` calls in profiles.
 #[derive(Clone, Copy, Debug)]
-pub struct Monomial {
+pub struct MonoTerm {
     /// Four u64 words; word 3 is most significant.
     packed: [u64; WORDS_PER_MONO],
     /// Short exponent vector.
@@ -103,7 +103,7 @@ pub struct Monomial {
     component: u32,
 }
 
-impl Monomial {
+impl MonoTerm {
     // ----- Construction -----
 
     /// Build a monomial from an exponent slice of length `ring.nvars()`.
@@ -273,12 +273,12 @@ impl Monomial {
                 | (packed[3] & m[3]);
             debug_assert_eq!(
                 ovf, 0,
-                "Monomial::mul overflow: per-byte exponent > 127 (ADR-018 contract: \
+                "MonoTerm::mul overflow: per-byte exponent > 127 (ADR-018 contract: \
                  caller's ring construction must guarantee no bba-step product overflows)"
             );
             debug_assert!(
                 self.total_deg.checked_add(other.total_deg).is_some(),
-                "Monomial::mul total-degree u32 overflow (ADR-018 contract)"
+                "MonoTerm::mul total-degree u32 overflow (ADR-018 contract)"
             );
         }
 
@@ -539,12 +539,12 @@ impl Monomial {
     }
 }
 
-impl PartialEq for Monomial {
+impl PartialEq for MonoTerm {
     fn eq(&self, other: &Self) -> bool {
         self.packed == other.packed && self.component == other.component
     }
 }
-impl Eq for Monomial {}
+impl Eq for MonoTerm {}
 
 // ----- packing helpers -----
 
@@ -590,7 +590,7 @@ mod tests {
     fn round_trip_exponents() {
         let r = mk_ring(5);
         let exps = vec![0u32, 3, 7, 0, 12];
-        let m = Monomial::from_exponents(&r, &exps).unwrap();
+        let m = MonoTerm::from_exponents(&r, &exps).unwrap();
         assert_eq!(m.exponents(&r), exps);
         assert_eq!(m.total_deg(), 22);
         m.assert_canonical(&r);
@@ -599,7 +599,7 @@ mod tests {
     #[test]
     fn one_is_canonical() {
         let r = mk_ring(7);
-        let one = Monomial::one(&r);
+        let one = MonoTerm::one(&r);
         assert_eq!(one.total_deg(), 0);
         assert_eq!(one.sev(), 0);
         one.assert_canonical(&r);
@@ -609,10 +609,10 @@ mod tests {
     fn from_exponents_rejects_above_max_var_exp() {
         // ADR-005: per-variable exponents are 7-bit, max 127.
         let r = mk_ring(3);
-        assert!(Monomial::from_exponents(&r, &[127, 0, 0]).is_some());
-        assert!(Monomial::from_exponents(&r, &[128, 0, 0]).is_none());
-        assert!(Monomial::from_exponents(&r, &[0, 200, 0]).is_none());
-        assert!(Monomial::from_exponents(&r, &[0, 0, 255]).is_none());
+        assert!(MonoTerm::from_exponents(&r, &[127, 0, 0]).is_some());
+        assert!(MonoTerm::from_exponents(&r, &[128, 0, 0]).is_none());
+        assert!(MonoTerm::from_exponents(&r, &[0, 200, 0]).is_none());
+        assert!(MonoTerm::from_exponents(&r, &[0, 0, 255]).is_none());
     }
 
     #[test]
@@ -622,8 +622,8 @@ mod tests {
         // Verify the happy-path boundary: 63 + 64 = 127 is the
         // largest per-variable sum that stays in the 7-bit budget.
         let r = mk_ring(4);
-        let a = Monomial::from_exponents(&r, &[63, 0, 0, 0]).unwrap();
-        let b = Monomial::from_exponents(&r, &[64, 0, 0, 0]).unwrap();
+        let a = MonoTerm::from_exponents(&r, &[63, 0, 0, 0]).unwrap();
+        let b = MonoTerm::from_exponents(&r, &[64, 0, 0, 0]).unwrap();
         let p = a.mul(&b, &r);
         p.assert_canonical(&r);
         assert_eq!(p.exponent(&r, 0).unwrap(), 127);
@@ -635,23 +635,23 @@ mod tests {
     /// `debug_assert!`, and this test confirms that guard fires.
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "Monomial::mul overflow")]
+    #[should_panic(expected = "MonoTerm::mul overflow")]
     fn mul_debug_asserts_on_per_byte_overflow() {
         let r = mk_ring(4);
         // 100 + 50 = 150 > 127: overflow on var 1.
-        let a = Monomial::from_exponents(&r, &[1, 100, 0, 0]).unwrap();
-        let b = Monomial::from_exponents(&r, &[1, 50, 0, 0]).unwrap();
+        let a = MonoTerm::from_exponents(&r, &[1, 100, 0, 0]).unwrap();
+        let b = MonoTerm::from_exponents(&r, &[1, 50, 0, 0]).unwrap();
         let _ = a.mul(&b, &r);
     }
 
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "Monomial::mul overflow")]
+    #[should_panic(expected = "MonoTerm::mul overflow")]
     fn mul_debug_asserts_on_exact_guard_bit_trip() {
         let r = mk_ring(4);
         // 64 + 64 = 128: smallest possible overflow (sets guard bit exactly).
-        let a = Monomial::from_exponents(&r, &[64, 0, 0, 0]).unwrap();
-        let b = Monomial::from_exponents(&r, &[64, 0, 0, 0]).unwrap();
+        let a = MonoTerm::from_exponents(&r, &[64, 0, 0, 0]).unwrap();
+        let b = MonoTerm::from_exponents(&r, &[64, 0, 0, 0]).unwrap();
         let _ = a.mul(&b, &r);
     }
 
@@ -663,8 +663,8 @@ mod tests {
         // that two non-overflowing sums in adjacent variables both
         // come out correctly.
         let r = mk_ring(5);
-        let a = Monomial::from_exponents(&r, &[60, 70, 80, 90, 100]).unwrap();
-        let b = Monomial::from_exponents(&r, &[60, 50, 40, 30, 20]).unwrap();
+        let a = MonoTerm::from_exponents(&r, &[60, 70, 80, 90, 100]).unwrap();
+        let b = MonoTerm::from_exponents(&r, &[60, 50, 40, 30, 20]).unwrap();
         // Per-var sums: 120, 120, 120, 120, 120 — all ≤127, no
         // overflow on any byte.
         let p = a.mul(&b, &r);
@@ -682,7 +682,7 @@ mod tests {
     #[test]
     fn sev_matches_nonzero_vars() {
         let r = mk_ring(10);
-        let m = Monomial::from_exponents(&r, &[0, 2, 0, 0, 5, 0, 0, 1, 0, 0]).unwrap();
+        let m = MonoTerm::from_exponents(&r, &[0, 2, 0, 0, 5, 0, 0, 1, 0, 0]).unwrap();
         let expected = (1u64 << 1) | (1u64 << 4) | (1u64 << 7);
         assert_eq!(m.sev(), expected);
     }
@@ -690,8 +690,8 @@ mod tests {
     #[test]
     fn divides_is_componentwise_le() {
         let r = mk_ring(3);
-        let a = Monomial::from_exponents(&r, &[1, 2, 3]).unwrap();
-        let b = Monomial::from_exponents(&r, &[2, 2, 4]).unwrap();
+        let a = MonoTerm::from_exponents(&r, &[1, 2, 3]).unwrap();
+        let b = MonoTerm::from_exponents(&r, &[2, 2, 4]).unwrap();
         assert!(a.divides(&b, &r));
         assert!(!b.divides(&a, &r));
     }
@@ -699,8 +699,8 @@ mod tests {
     #[test]
     fn div_after_mul_roundtrip() {
         let r = mk_ring(4);
-        let a = Monomial::from_exponents(&r, &[1, 2, 0, 5]).unwrap();
-        let b = Monomial::from_exponents(&r, &[3, 0, 4, 1]).unwrap();
+        let a = MonoTerm::from_exponents(&r, &[1, 2, 0, 5]).unwrap();
+        let b = MonoTerm::from_exponents(&r, &[3, 0, 4, 1]).unwrap();
         let p = a.mul(&b, &r);
         let back = p.div(&b, &r).unwrap();
         assert_eq!(back, a);
@@ -709,8 +709,8 @@ mod tests {
     #[test]
     fn lcm_is_max_componentwise() {
         let r = mk_ring(3);
-        let a = Monomial::from_exponents(&r, &[1, 5, 3]).unwrap();
-        let b = Monomial::from_exponents(&r, &[4, 2, 3]).unwrap();
+        let a = MonoTerm::from_exponents(&r, &[1, 5, 3]).unwrap();
+        let b = MonoTerm::from_exponents(&r, &[4, 2, 3]).unwrap();
         let l = a.lcm(&b, &r);
         assert_eq!(l.exponents(&r), vec![4, 5, 3]);
     }
@@ -718,12 +718,12 @@ mod tests {
     #[test]
     fn degrevlex_cmp_basic() {
         let r = mk_ring(3);
-        let x2 = Monomial::from_exponents(&r, &[2, 0, 0]).unwrap();
-        let xy = Monomial::from_exponents(&r, &[1, 1, 0]).unwrap();
-        let y2 = Monomial::from_exponents(&r, &[0, 2, 0]).unwrap();
-        let xz = Monomial::from_exponents(&r, &[1, 0, 1]).unwrap();
-        let yz = Monomial::from_exponents(&r, &[0, 1, 1]).unwrap();
-        let z2 = Monomial::from_exponents(&r, &[0, 0, 2]).unwrap();
+        let x2 = MonoTerm::from_exponents(&r, &[2, 0, 0]).unwrap();
+        let xy = MonoTerm::from_exponents(&r, &[1, 1, 0]).unwrap();
+        let y2 = MonoTerm::from_exponents(&r, &[0, 2, 0]).unwrap();
+        let xz = MonoTerm::from_exponents(&r, &[1, 0, 1]).unwrap();
+        let yz = MonoTerm::from_exponents(&r, &[0, 1, 1]).unwrap();
+        let z2 = MonoTerm::from_exponents(&r, &[0, 0, 2]).unwrap();
 
         // Standard degrevlex ordering for 3 variables at total degree 2:
         // x^2 > x*y > y^2 > x*z > y*z > z^2
@@ -737,16 +737,16 @@ mod tests {
     #[test]
     fn degrevlex_cmp_by_total_deg() {
         let r = mk_ring(3);
-        let a = Monomial::from_exponents(&r, &[3, 0, 0]).unwrap();
-        let b = Monomial::from_exponents(&r, &[0, 0, 2]).unwrap();
+        let a = MonoTerm::from_exponents(&r, &[3, 0, 0]).unwrap();
+        let b = MonoTerm::from_exponents(&r, &[0, 0, 2]).unwrap();
         assert_eq!(a.cmp(&b, &r), Ordering::Greater);
     }
 
     #[test]
     fn degrevlex_cmp_equal() {
         let r = mk_ring(4);
-        let a = Monomial::from_exponents(&r, &[1, 2, 3, 4]).unwrap();
-        let b = Monomial::from_exponents(&r, &[1, 2, 3, 4]).unwrap();
+        let a = MonoTerm::from_exponents(&r, &[1, 2, 3, 4]).unwrap();
+        let b = MonoTerm::from_exponents(&r, &[1, 2, 3, 4]).unwrap();
         assert_eq!(a.cmp(&b, &r), Ordering::Equal);
     }
 
@@ -756,8 +756,8 @@ mod tests {
         // 127. Use nvars = 3 so total_deg can still saturate the
         // 8-bit top-byte cap (>255): 127 + 127 + 50 = 304.
         let r = mk_ring(3);
-        let a = Monomial::from_exponents(&r, &[127, 50, 127]).unwrap();
-        let b = Monomial::from_exponents(&r, &[50, 127, 127]).unwrap();
+        let a = MonoTerm::from_exponents(&r, &[127, 50, 127]).unwrap();
+        let b = MonoTerm::from_exponents(&r, &[50, 127, 127]).unwrap();
         // Total degrees are equal (304). Largest index with differing
         // exponent is 1: a_1 = 50, b_1 = 127. Smaller exponent at
         // largest differing index wins degrevlex, so a > b.
@@ -770,13 +770,13 @@ mod tests {
         // total deg 3, we want x*y*z < x^2*z. Actually let's test the
         // canonical example: x*y^2 > y^3 > x*y*z > y^2*z > x*z^2 > y*z^2 > z^3.
         let r = mk_ring(3);
-        let xy2 = Monomial::from_exponents(&r, &[1, 2, 0]).unwrap();
-        let y3 = Monomial::from_exponents(&r, &[0, 3, 0]).unwrap();
-        let xyz = Monomial::from_exponents(&r, &[1, 1, 1]).unwrap();
-        let y2z = Monomial::from_exponents(&r, &[0, 2, 1]).unwrap();
-        let xz2 = Monomial::from_exponents(&r, &[1, 0, 2]).unwrap();
-        let yz2 = Monomial::from_exponents(&r, &[0, 1, 2]).unwrap();
-        let z3 = Monomial::from_exponents(&r, &[0, 0, 3]).unwrap();
+        let xy2 = MonoTerm::from_exponents(&r, &[1, 2, 0]).unwrap();
+        let y3 = MonoTerm::from_exponents(&r, &[0, 3, 0]).unwrap();
+        let xyz = MonoTerm::from_exponents(&r, &[1, 1, 1]).unwrap();
+        let y2z = MonoTerm::from_exponents(&r, &[0, 2, 1]).unwrap();
+        let xz2 = MonoTerm::from_exponents(&r, &[1, 0, 2]).unwrap();
+        let yz2 = MonoTerm::from_exponents(&r, &[0, 1, 2]).unwrap();
+        let z3 = MonoTerm::from_exponents(&r, &[0, 0, 3]).unwrap();
         let sequence = [&xy2, &y3, &xyz, &y2z, &xz2, &yz2, &z3];
         for w in sequence.windows(2) {
             let ord = w[0].cmp(w[1], &r);

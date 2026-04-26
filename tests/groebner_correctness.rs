@@ -38,7 +38,7 @@ use ark_bls12_381::Fr;
 use ark_ff::Field as ArkField;
 use ark_gb::bba::compute_gb_serial;
 use ark_gb::compute_gb;
-use ark_gb::monomial::Monomial;
+use ark_gb::monomial::MonoTerm;
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 use ark_gb::validate::is_groebner_basis;
@@ -76,7 +76,7 @@ fn assert_proper(label: &str, gb: &[Poly<Fr>], ring: &Ring<Fr>) {
     assert!(!gb.is_empty(), "[{label}] empty reduced GB");
     let nvars = ring.nvars() as usize;
     let zero_exps = vec![0u32; nvars];
-    let unit = Monomial::from_exponents(ring, &zero_exps).unwrap();
+    let unit = MonoTerm::from_exponents(ring, &zero_exps).unwrap();
     let unit_seen = gb.iter().any(|p| {
         let terms: Vec<_> = p.iter().collect();
         terms.len() == 1 && *terms[0].1 == unit
@@ -280,7 +280,7 @@ fn poly_from_lit(ring: &Ring<Fr>, lit: PolyLit<'_>) -> Poly<Fr> {
         // Build c * prod(var_poly(vi)^pow).
         let mut term = Poly::from_terms(
             ring,
-            vec![(c, Monomial::from_exponents(ring, &vec![0u32; ring.nvars() as usize]).unwrap())],
+            vec![(c, MonoTerm::from_exponents(ring, &vec![0u32; ring.nvars() as usize]).unwrap())],
         );
         for &(vi, pow) in mono {
             for _ in 0..pow {

@@ -66,7 +66,7 @@
 use std::sync::Arc;
 
 use crate::field::Field;
-use crate::monomial::Monomial;
+use crate::monomial::MonoTerm;
 use crate::poly::Poly;
 use crate::ring::Ring;
 
@@ -136,7 +136,7 @@ pub struct KBucket<F: Field + Copy> {
     slots: [Option<Poly<F>>; NUM_SLOTS],
     /// Cached leading term: `(coeff, monomial, slot_index)`. The
     /// `slot_index` is which slot currently owns the leading term.
-    lm_cache: Option<(F, Monomial, usize)>,
+    lm_cache: Option<(F, MonoTerm, usize)>,
     /// Bitmask of slots changed since the last `leading()` call.
     /// Bit `i` (i < `NUM_SLOTS`) corresponds to slot `i`.
     dirty: u32,
@@ -260,10 +260,10 @@ impl<F: Field + Copy> KBucket<F> {
     ///
     /// Per ADR-018, the caller's ring construction must ensure
     /// `m * p_i` products stay in-range. Debug builds catch violations
-    /// via `debug_assert!` inside `Monomial::mul`; release builds
+    /// via `debug_assert!` inside `MonoTerm::mul`; release builds
     /// silently corrupt the monomial (matching Singular's
     /// `p_ExpVectorAdd` release-mode contract).
-    pub fn minus_m_mult_p(&mut self, m: &Monomial, c: F, p: &Poly<F>) {
+    pub fn minus_m_mult_p(&mut self, m: &MonoTerm, c: F, p: &Poly<F>) {
         if c.is_zero() || p.is_zero() {
             return;
         }
@@ -289,7 +289,7 @@ impl<F: Field + Copy> KBucket<F> {
         // Per ADR-018, the caller's ring construction must ensure
         // that `m * p[i]` products stay in-range; release builds
         // do not check. Debug builds catch violations inside
-        // `Monomial::mul` via `debug_assert!`.
+        // `MonoTerm::mul` via `debug_assert!`.
         let merged = existing.sub_mm_mult_qq_consuming(c, m, p, &self.ring);
         self.mark_dirty(i);
         if merged.is_zero() {
@@ -329,7 +329,7 @@ impl<F: Field + Copy> KBucket<F> {
     /// mutation is only redistributing the representation across slots
     /// (peeling cancelled leaders, refreshing `dirty` / `lm_cache`).
     /// To actually pop the leader, use [`extract_leading`](Self::extract_leading).
-    pub fn leading(&mut self) -> Option<(F, &Monomial)> {
+    pub fn leading(&mut self) -> Option<(F, &MonoTerm)> {
         if self.dirty == 0
             && let Some((c, ref m, _)) = self.lm_cache
         {
@@ -420,7 +420,7 @@ impl<F: Field + Copy> KBucket<F> {
     ///
     /// Returns `None` if the bucket is zero. Leaves the bucket
     /// algebraically equal to (old value) − (popped term).
-    pub fn extract_leading(&mut self) -> Option<(F, Monomial)> {
+    pub fn extract_leading(&mut self) -> Option<(F, MonoTerm)> {
         let (c, m) = match self.leading() {
             None => return None,
             Some((c, m)) => (c, *m),
@@ -531,8 +531,8 @@ mod tests {
         Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
     }
 
-    fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
-        Monomial::from_exponents(r, e).unwrap()
+    fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+        MonoTerm::from_exponents(r, e).unwrap()
     }
 
     #[test]
@@ -679,7 +679,7 @@ mod tests {
         // Add 20 distinct one-term polys of length 1 each via
         // minus_m_mult_p. Each goes into slot 0; cascading should
         // push the total up into slot 2 (log4(20) ≈ 2.2 -> slot 3).
-        let m_one = Monomial::one(&r);
+        let m_one = MonoTerm::one(&r);
         for i in 1u32..=20 {
             let q = Poly::from_terms(&r, vec![(Fr::from(1u64), mono(&r, &[i % 5, (i / 5) % 5, 0]))]);
             // We want to accumulate +q, i.e. -(-1)*1*q.
@@ -703,8 +703,8 @@ mod tests {
         let r = mk_ring(2);
         let mut b = KBucket::<Fr>::new(Arc::clone(&r));
         let p = Poly::from_terms(&r, vec![(Fr::from(2u64), mono(&r, &[1, 0]))]);
-        b.minus_m_mult_p(&Monomial::one(&r), Fr::from(3u64), &p); // -3*1*p = -3p
-        b.minus_m_mult_p(&Monomial::one(&r), -Fr::from(3u64), &p); // +3p
+        b.minus_m_mult_p(&MonoTerm::one(&r), Fr::from(3u64), &p); // -3*1*p = -3p
+        b.minus_m_mult_p(&MonoTerm::one(&r), -Fr::from(3u64), &p); // +3p
         let zero = b.is_zero();
         let poly = b.into_poly();
         assert_eq!(zero, poly.is_zero());
@@ -732,7 +732,7 @@ mod tests {
         // Either way the leader `3*x^2` must cancel against the
         // `-3*x^2`. We test by adding both as "minus_m_mult_p" with
         // m = 1 and c = -1 (so -(-1)*1*pk = +pk).
-        let one = Monomial::one(&r);
+        let one = MonoTerm::one(&r);
         let neg1 = -Fr::one();
         b.minus_m_mult_p(&one, neg1, &p1);
         b.minus_m_mult_p(&one, neg1, &p2);

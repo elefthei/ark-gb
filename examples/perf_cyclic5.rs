@@ -10,7 +10,7 @@ use std::time::Instant;
 use ark_bls12_381::Fr;
 use ark_ff::One;
 use ark_gb::compute_gb;
-use ark_gb::monomial::Monomial;
+use ark_gb::monomial::MonoTerm;
 use ark_gb::ordering::MonoOrder;
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
@@ -19,8 +19,8 @@ fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
     Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
 }
 
-fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
-    Monomial::from_exponents(r, e).unwrap()
+fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+    MonoTerm::from_exponents(r, e).unwrap()
 }
 
 fn cyclic5_input(ring: &Arc<Ring<Fr>>) -> Vec<Poly<Fr>> {

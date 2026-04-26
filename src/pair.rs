@@ -21,7 +21,7 @@
 
 use std::cmp::Ordering;
 
-use crate::monomial::Monomial;
+use crate::monomial::MonoTerm;
 
 /// Opaque identity of a pair in an [`LSet`](crate::lset::LSet).
 ///
@@ -46,7 +46,7 @@ pub struct Pair {
     /// Larger basis index.
     pub j: u32,
     /// LCM of `lm(S[i])` and `lm(S[j])`.
-    pub lcm: Monomial,
+    pub lcm: MonoTerm,
     /// Cached `lcm.sev()` — pre-computed so the chain criterion's
     /// sev pre-filter is a direct u64 load.
     pub lcm_sev: u64,
@@ -77,7 +77,7 @@ impl Pair {
     /// overwritten by [`LSet::insert`](crate::lset::LSet::insert);
     /// callers that never hand the pair to an `LSet` may read a stale
     /// key, which is harmless.
-    pub fn new(i: u32, j: u32, lcm: Monomial, sugar: u32, arrival: u64) -> Self {
+    pub fn new(i: u32, j: u32, lcm: MonoTerm, sugar: u32, arrival: u64) -> Self {
         let (i, j) = if i < j { (i, j) } else { (j, i) };
         debug_assert!(i != j, "degenerate pair with i == j");
         let lcm_sev = lcm.sev();
@@ -129,7 +129,7 @@ impl Eq for Pair {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::monomial::Monomial;
+    use crate::monomial::MonoTerm;
     use crate::ordering::MonoOrder;
     use crate::ring::Ring;
     use ark_bls12_381::Fr;
@@ -140,8 +140,8 @@ mod tests {
         Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap()
     }
 
-    fn lcm_mono(r: &Ring<Fr>, exps: &[u32]) -> Monomial {
-        Monomial::from_exponents(r, exps).unwrap()
+    fn lcm_mono(r: &Ring<Fr>, exps: &[u32]) -> MonoTerm {
+        MonoTerm::from_exponents(r, exps).unwrap()
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Property-based tests for monomials.
 
 use ark_bls12_381::Fr;
-use ark_gb::{MonoOrder, Monomial, Ring};
+use ark_gb::{MonoOrder, MonoTerm, Ring};
 use proptest::prelude::*;
 use std::cmp::Ordering;
 
@@ -15,17 +15,17 @@ fn ring_strategy() -> impl Strategy<Value = Ring<Fr>> {
 
 /// Generate a monomial in the given ring with per-variable exponents
 /// small enough that products stay within the 8-bit limit.
-fn mono_strategy(ring: Ring<Fr>) -> impl Strategy<Value = (Ring<Fr>, Monomial)> {
+fn mono_strategy(ring: Ring<Fr>) -> impl Strategy<Value = (Ring<Fr>, MonoTerm)> {
     let n = ring.nvars() as usize;
     // Cap at 30 so sums of up to ~8 monomials stay within 255.
     prop::collection::vec(0u32..30, n).prop_map(move |exps| {
-        let m = Monomial::from_exponents(&ring, &exps).unwrap();
+        let m = MonoTerm::from_exponents(&ring, &exps).unwrap();
         (ring.clone(), m)
     })
 }
 
 /// Generate a ring and three monomials sharing it.
-fn ring_mono3_strategy() -> impl Strategy<Value = (Ring<Fr>, Monomial, Monomial, Monomial)> {
+fn ring_mono3_strategy() -> impl Strategy<Value = (Ring<Fr>, MonoTerm, MonoTerm, MonoTerm)> {
     ring_strategy().prop_flat_map(|r| {
         let n = r.nvars() as usize;
         (
@@ -35,15 +35,15 @@ fn ring_mono3_strategy() -> impl Strategy<Value = (Ring<Fr>, Monomial, Monomial,
             prop::collection::vec(0u32..20, n),
         )
             .prop_map(|(r, ae, be, ce)| {
-                let a = Monomial::from_exponents(&r, &ae).unwrap();
-                let b = Monomial::from_exponents(&r, &be).unwrap();
-                let c = Monomial::from_exponents(&r, &ce).unwrap();
+                let a = MonoTerm::from_exponents(&r, &ae).unwrap();
+                let b = MonoTerm::from_exponents(&r, &be).unwrap();
+                let c = MonoTerm::from_exponents(&r, &ce).unwrap();
                 (r, a, b, c)
             })
     })
 }
 
-fn ring_mono2_strategy() -> impl Strategy<Value = (Ring<Fr>, Monomial, Monomial)> {
+fn ring_mono2_strategy() -> impl Strategy<Value = (Ring<Fr>, MonoTerm, MonoTerm)> {
     ring_strategy().prop_flat_map(|r| {
         let n = r.nvars() as usize;
         (
@@ -52,8 +52,8 @@ fn ring_mono2_strategy() -> impl Strategy<Value = (Ring<Fr>, Monomial, Monomial)
             prop::collection::vec(0u32..25, n),
         )
             .prop_map(|(r, ae, be)| {
-                let a = Monomial::from_exponents(&r, &ae).unwrap();
-                let b = Monomial::from_exponents(&r, &be).unwrap();
+                let a = MonoTerm::from_exponents(&r, &ae).unwrap();
+                let b = MonoTerm::from_exponents(&r, &be).unwrap();
                 (r, a, b)
             })
     })
@@ -151,7 +151,7 @@ proptest! {
     #[test]
     fn round_trip_exponents((r, m) in ring_strategy().prop_flat_map(mono_strategy)) {
         let es = m.exponents(&r);
-        let m2 = Monomial::from_exponents(&r, &es).unwrap();
+        let m2 = MonoTerm::from_exponents(&r, &es).unwrap();
         prop_assert_eq!(m, m2);
     }
 

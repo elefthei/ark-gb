@@ -6,7 +6,7 @@ use ark_bls12_381::Fr;
 use ark_ff::{Field, One, PrimeField, Zero};
 use ark_gb::compute_gb;
 use ark_gb::compute_gb_parallel;
-use ark_gb::monomial::Monomial;
+use ark_gb::monomial::MonoTerm;
 use ark_gb::ordering::MonoOrder;
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
@@ -43,8 +43,8 @@ fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
     Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
 }
 
-fn mono(r: &Ring<Fr>, e: &[u32]) -> Monomial {
-    Monomial::from_exponents(r, e).unwrap()
+fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+    MonoTerm::from_exponents(r, e).unwrap()
 }
 
 /// Generate a random polynomial in `r` with at most `max_terms`
@@ -87,7 +87,7 @@ fn normal_form(p: &Poly<Fr>, gb: &[Poly<Fr>], ring: &Ring<Fr>) -> Poly<Fr> {
             }
         }
         // Leader has no divisor. Try to reduce non-leading terms.
-        let terms: Vec<(Fr, Monomial)> = cur.iter().map(|(c, m)| (c, *m)).collect();
+        let terms: Vec<(Fr, MonoTerm)> = cur.iter().map(|(c, m)| (c, *m)).collect();
         let mut made_progress = false;
         let mut rebuilt = vec![];
         for (c, m) in terms {
