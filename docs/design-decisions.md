@@ -3406,6 +3406,142 @@ explored before settling on zippel parity.
 
 ---
 
+## ADR-022: Phase L — sparse `Matrix<F>` + Gaussian elimination
+
+**Status:** Accepted
+**Date:** 2026-04-26
+
+### Context
+
+Phases I/J/K closed the achievable wins on the per-S-pair Buchberger
+pipeline. Further structural speed-ups require **F4-style block
+reduction**: collect a batch of S-polynomials and reductors into a
+sparse matrix whose columns are monomials in the chosen order, then
+row-reduce the matrix in one pass. F4 needs two artefacts that ark-gb
+did not previously have:
+
+1. a sparse-matrix data shape over an arkworks field `F`, and
+2. a Gaussian eliminator that respects a column ordering (so the
+    pivot column at step `k` is the smallest-monomial column not yet
+    eliminated).
+
+The user requested: rather than fork `arkworks-rs/algebra`, *copy* the
+minimal sparse-matrix shape that already exists in
+`arkworks-rs/snark` (`relations/src/utils/matrix.rs`) into ark-gb and
+extend it with the operations F4 needs. F4 itself is **explicitly out
+of scope for Phase L**; it lands in a successor phase that builds on
+this substrate.
+
+### Decision
+
+A new module lives at `src/matrix/`:
+
+- **`sparse.rs`** — copies `Matrix<F> = Vec<Vec<(F, usize)>>`,
+  `transpose`, and `mat_vec_mul` verbatim from
+  `arkworks-rs/snark@6d5f7ae` (dual MIT / Apache-2.0 — compatible
+  with ark-gb's GPL-3.0-or-later via one-way upgrade). An attribution
+  comment names the upstream file and SHA. The original three items
+  retain their exact bodies and signatures.
+
+  On top of this we add `SparseRow<F>`, a newtype around
+  `Vec<(F, usize)>` with two enforced invariants:
+
+  1. column indices strictly ascending,
+  2. no zero entries.
+
+  `SparseRow<F>` exposes `from_pairs`, `from_dense`, `as_pairs`,
+  `into_pairs`, `is_zero`, `len_nz`, `leading_col`, `trailing_col`,
+  `coeff`, `scale(&F)`, `axpy(&F, &Self) -> Self`, and
+  `axpy_assign(&F, &Self)`. AXPY is implemented as a linear merge over
+  the two sorted column lists; cancellations are dropped on the fly.
+  `From<Vec<(F, usize)>>` and the inverse `Into` round-trip with the
+  snark `Matrix` row type so callers don't have to choose a side.
+
+- **`gauss.rs`** — Gaussian elimination keyed on column order:
+
+  - `pub fn row_echelon<F: Field>(&mut [SparseRow<F>]) -> usize`
+    selects, at each step, the still-unprocessed row with the
+    smallest leading column, normalises it to a unit pivot,
+    eliminates that column from every row below, and finally moves
+    zero rows to the bottom. Returns the rank.
+  - `pub fn rref<F: Field>(&mut [SparseRow<F>]) -> usize`
+    back-substitutes after `row_echelon` so each pivot column
+    contains a single non-zero entry.
+  - `pub fn rank<F: Field>(&[SparseRow<F>]) -> usize` — non-mutating;
+    clones internally.
+  - `row_echelon_matrix` and `rref_matrix` are convenience adapters
+    for the snark-shaped `Matrix<F> = Vec<Vec<(F, usize)>>`.
+
+  The trait bound is `F: ark_ff::Field`, deliberately broader than
+  ark-gb's typical `F: FftField`. Phase L's substrate is generic in
+  the field; F4 will add `FftField` (or whatever it really needs) at
+  its own boundary.
+
+### Bench reference (`after-l-matrix`)
+
+Benches live at `benches/matrix.rs`. Each shape is benched twice
+(`row_echelon` and `rref`) over `ark_bls12_381::Fr`. Phase L only
+*adds* code, so there is no regression baseline — these numbers are
+the absolute reference line for future tuning.
+
+| shape (rows×cols, density)       | row_echelon | rref       |
+|----------------------------------|-------------|------------|
+| `square_100_d3` (100×100, ~33 %) | ~11.8 ms    | ~12.8 ms   |
+| `square_500_d100` (500×500, 1 %) | (recorded by `bench-baseline.sh after-l-matrix`) |
+| `tall_500x100_d10` (500×100, 10 %) | "        | "          |
+| `wide_100x500_d10` (100×500, 10 %) | "        | "          |
+| `sparse_1pct_1000` (1000×1000, 1 %) | "       | "          |
+| `sparse_5pct_1000` (1000×1000, 5 %) | "       | "          |
+
+The `square_100_d3` row was sampled by hand in the Phase L commit
+session (criterion 3-sample run: 11.72 / 11.78 / 11.91 ms). Larger
+shapes are deferred to a dedicated `bench-baseline.sh after-l-matrix`
+run.
+
+### Tests
+
+- `src/matrix/sparse.rs` — 14 unit tests covering snark helpers
+  (`transpose`, `mat_vec_mul`), constructor invariants
+  (sort + dedup-sum + zero drop, cancellation), `scale`, `axpy`
+  (including a 256-trial randomised vs dense reference), and the
+  `Vec<(F, usize)>` round-trip.
+- `src/matrix/gauss.rs` — 11 unit tests covering identity, swap-to-
+  pivot-order, rank-deficient input, RREF idempotency,
+  permutation invariance, the snark `Matrix<F>` adapter, a 64-trial
+  randomised rank vs naive dense oracle, and the dependent-row
+  kernel test.
+
+Total: 25 new tests, all passing. `cargo clippy --all-targets -- -D
+warnings` is clean.
+
+### Out of scope (deferred)
+
+- **F4 itself.** Assembly of an S-pair batch into a `Matrix<F>`,
+  monomial → column-id index, and basis harvesting from the RREF are
+  the work of a successor phase. Phase L delivers only the linear-
+  algebra substrate.
+- **Parallel Gauss.** Single-threaded first; rayonisation gated on
+  bench evidence in a successor phase.
+- **Bitvector tricks for GF(2) / small primes.** ark-gb targets
+  BLS12-381 `Fr`.
+- **Forking `arkworks-rs/algebra`.** Not necessary — only the snark
+  matrix module shape was needed, and that is < 40 lines.
+
+### Files added / changed
+
+- new: `src/matrix/mod.rs`
+- new: `src/matrix/sparse.rs` (snark copy + `SparseRow<F>`)
+- new: `src/matrix/gauss.rs` (Gaussian elimination)
+- new: `benches/matrix.rs`
+- changed: `src/lib.rs` — `pub mod matrix;`
+- changed: `Cargo.toml` — `ark-std` dev-dep (test RNG), `[[bench]]`
+  for `matrix`.
+
+### Acceptance
+
+Met. 25/25 matrix tests pass, clippy clean, bench compiles and runs,
+ADR documented.
+
 ## How to add a new ADR
 
 1. Pick the next number. Don't reuse retired numbers.

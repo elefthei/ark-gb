@@ -41,6 +41,7 @@ linked_list_poly_pool = []
 [dev-dependencies]
 proptest = "1"
 ark-bls12-381 = { git = "https://github.com/arkworks-rs/algebra.git", default-features = false, features = ["scalar_field"] }
+ark-std = { git = "https://github.com/arkworks-rs/std.git", default-features = false }
 criterion = "0.5"
 
 # Sanitisers are available only with `-Z sanitizer=thread` on nightly.
@@ -48,6 +49,10 @@ criterion = "0.5"
 
 [[bench]]
 name = "groebner"
+harness = false
+
+[[bench]]
+name = "matrix"
 harness = false
 
 [profile.release]

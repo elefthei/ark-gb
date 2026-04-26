@@ -32,6 +32,7 @@ pub mod gm;
 pub mod kbucket;
 pub mod lobject;
 pub mod lset;
+pub mod matrix;
 pub mod monomial;
 pub mod ordering;
 pub mod pair;
