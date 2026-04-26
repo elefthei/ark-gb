@@ -6,7 +6,7 @@
 
 use ark_bls12_381::Fr;
 use ark_ff::{One, PrimeField, Zero};
-use ark_gb::{MonoOrder, MonoTerm, Poly, Ring};
+use ark_gb::{DegRevLex, MonoTerm, Poly, Ring};
 use proptest::prelude::*;
 
 fn arb_fr() -> impl Strategy<Value = Fr> {
@@ -17,15 +17,15 @@ fn arb_nonzero_fr() -> impl Strategy<Value = Fr> {
     arb_fr().prop_map(|f| if f.is_zero() { Fr::one() } else { f })
 }
 
-fn ring_strategy(max_nvars: u32) -> impl Strategy<Value = Ring<Fr>> {
-    (1u32..=max_nvars).prop_map(|n| Ring::<Fr>::new(n, MonoOrder::DegRevLex).unwrap())
+fn ring_strategy(max_nvars: u32) -> impl Strategy<Value = Ring<Fr, DegRevLex>> {
+    (1u32..=max_nvars).prop_map(|n| Ring::<Fr, DegRevLex>::new(n, DegRevLex).unwrap())
 }
 
 fn poly_strategy(
-    ring: Ring<Fr>,
+    ring: Ring<Fr, DegRevLex>,
     max_terms: usize,
     max_exp: u32,
-) -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>)> {
+) -> impl Strategy<Value = (Ring<Fr, DegRevLex>, Poly<Fr>)> {
     let n = ring.nvars() as usize;
     prop::collection::vec(
         (arb_nonzero_fr(), prop::collection::vec(0u32..max_exp, n)),
@@ -44,7 +44,8 @@ fn poly_strategy(
 /// Ring + three polys. Small caps so products stay within the 8-bit
 /// exponent budget (we sum exponents of up to two operands, so
 /// max_exp * 2 ≤ 255 → max_exp ≤ 127).
-fn ring_poly3_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>, Poly<Fr>)> {
+fn ring_poly3_strategy()
+-> impl Strategy<Value = (Ring<Fr, DegRevLex>, Poly<Fr>, Poly<Fr>, Poly<Fr>)> {
     ring_strategy(5).prop_flat_map(|r| {
         (
             Just(r.clone()),
@@ -56,7 +57,7 @@ fn ring_poly3_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>,
     })
 }
 
-fn ring_poly2_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>)> {
+fn ring_poly2_strategy() -> impl Strategy<Value = (Ring<Fr, DegRevLex>, Poly<Fr>, Poly<Fr>)> {
     ring_strategy(5).prop_flat_map(|r| {
         (
             Just(r.clone()),
@@ -67,12 +68,12 @@ fn ring_poly2_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>)
     })
 }
 
-fn ring_poly1_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>)> {
+fn ring_poly1_strategy() -> impl Strategy<Value = (Ring<Fr, DegRevLex>, Poly<Fr>)> {
     ring_strategy(5).prop_flat_map(|r| poly_strategy(r, 10, 15))
 }
 
 fn ring_poly_term_strategy()
--> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>, Fr, MonoTerm)> {
+-> impl Strategy<Value = (Ring<Fr, DegRevLex>, Poly<Fr>, Poly<Fr>, Fr, MonoTerm)> {
     ring_strategy(4).prop_flat_map(|r| {
         let n = r.nvars() as usize;
         (
@@ -223,7 +224,7 @@ proptest! {
 /// The ideal of the cyclic-3 system over Fr.
 #[test]
 fn cyclic3_polynomials_are_canonical() {
-    let r = Ring::<Fr>::new(3, MonoOrder::DegRevLex).unwrap();
+    let r = Ring::<Fr, DegRevLex>::new(3, DegRevLex).unwrap();
     let mono = |e: &[u32]| MonoTerm::from_exponents(&r, e).unwrap();
     // f1 = x + y + z
     let f1 = Poly::from_terms(
@@ -246,7 +247,10 @@ fn cyclic3_polynomials_are_canonical() {
     // f3 = x*y*z - 1
     let f3 = Poly::from_terms(
         &r,
-        vec![(Fr::one(), mono(&[1, 1, 1])), (-Fr::one(), mono(&[0, 0, 0]))],
+        vec![
+            (Fr::one(), mono(&[1, 1, 1])),
+            (-Fr::one(), mono(&[0, 0, 0])),
+        ],
     );
     f1.assert_canonical(&r);
     f2.assert_canonical(&r);
@@ -259,7 +263,7 @@ fn cyclic3_polynomials_are_canonical() {
 /// A small ideal: just builds and canonicalises.
 #[test]
 fn small_ideal_fixture() {
-    let r = Ring::<Fr>::new(1, MonoOrder::DegRevLex).unwrap();
+    let r = Ring::<Fr, DegRevLex>::new(1, DegRevLex).unwrap();
     let one_mono = MonoTerm::one(&r);
     let x = MonoTerm::from_exponents(&r, &[1]).unwrap();
     // f = x - 1
@@ -270,7 +274,7 @@ fn small_ideal_fixture() {
 
 #[test]
 fn single_term_edge_cases() {
-    let r = Ring::<Fr>::new(3, MonoOrder::DegRevLex).unwrap();
+    let r = Ring::<Fr, DegRevLex>::new(3, DegRevLex).unwrap();
     // The multiplicative identity polynomial.
     let one_poly = Poly::monomial(&r, Fr::one(), MonoTerm::one(&r));
     one_poly.assert_canonical(&r);
@@ -302,7 +306,7 @@ fn drop_100k_term_poly_does_not_overflow_stack() {
     // test run. Scaling to 100 K terms costs ~10 ms on the Vec
     // backend and ~40 ms on the linked-list backend — cheap enough
     // to keep in the default suite.
-    let r = Ring::<Fr>::new(4, MonoOrder::DegRevLex).unwrap();
+    let r = Ring::<Fr, DegRevLex>::new(4, DegRevLex).unwrap();
     let n: usize = 100_000;
 
     // Generate N distinct monomials by sweeping exponents in base-64

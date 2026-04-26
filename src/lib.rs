@@ -51,7 +51,7 @@ pub use kbucket::KBucket;
 pub use lobject::LObject;
 pub use lset::LSet;
 pub use monomial::MonoTerm;
-pub use ordering::MonoOrder;
+pub use ordering::{DegRevLex, Elim, MonoOrder};
 pub use pair::{Pair, PairKey};
 pub use parallel::{CancelHandle, Cancelled, compute_gb_parallel};
 pub use poly::Poly;
@@ -63,7 +63,7 @@ pub use sbasis::SBasis;
 const _: fn() = || {
     use ark_bls12_381::Fr;
     fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<Ring<Fr>>();
+    assert_send_sync::<Ring<Fr, DegRevLex>>();
     assert_send_sync::<MonoTerm>();
     assert_send_sync::<Poly<Fr>>();
     assert_send_sync::<Pair>();
@@ -78,6 +78,6 @@ const _: fn() = || {
 const _: fn() = || {
     use ark_bls12_381::Fr;
     fn assert_send<T: Send>() {}
-    assert_send::<KBucket<Fr>>();
-    assert_send::<LObject<Fr>>();
+    assert_send::<KBucket<Fr, DegRevLex>>();
+    assert_send::<LObject<Fr, DegRevLex>>();
 };

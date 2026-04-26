@@ -17,6 +17,7 @@
 
 use crate::field::Field;
 use crate::monomial::MonoTerm;
+use crate::ordering::MonoOrder;
 use crate::poly::Poly;
 use crate::ring::Ring;
 
@@ -152,7 +153,7 @@ impl<F: Field + Copy> SBasis<F> {
     /// the index at which `h` was placed. The polynomial must be
     /// nonzero; inserting zero panics in debug builds and no-ops in
     /// release (returns the would-be index without actually pushing).
-    pub fn insert(&mut self, ring: &Ring<F>, h: Poly<F>) -> usize {
+    pub fn insert<O: MonoOrder>(&mut self, ring: &Ring<F, O>, h: Poly<F>) -> usize {
         let idx = self.insert_no_clear(h);
         self.clear_redundant_for(ring, idx);
         idx
@@ -197,7 +198,7 @@ impl<F: Field + Copy> SBasis<F> {
     /// This is the "clearS" half of insert, split out so the bba
     /// driver can run pair generation between the two halves. Safe
     /// to call multiple times — redundancy is monotonic.
-    pub fn clear_redundant_for(&mut self, ring: &Ring<F>, idx: usize) {
+    pub fn clear_redundant_for<O: MonoOrder>(&mut self, ring: &Ring<F, O>, idx: usize) {
         debug_assert!(idx < self.polys.len());
         let lm_sev = self.sevs[idx];
         // ADR-010: read leader from the lms cache rather than
@@ -244,7 +245,7 @@ impl<F: Field + Copy> SBasis<F> {
     /// monomial as the old poly (tail reduction never changes the
     /// leader); this is checked in debug builds and silently trusted
     /// in release. `new_poly` must be nonzero.
-    pub fn replace_poly(&mut self, ring: &Ring<F>, idx: usize, new_poly: Poly<F>) {
+    pub fn replace_poly<O: MonoOrder>(&mut self, ring: &Ring<F, O>, idx: usize, new_poly: Poly<F>) {
         debug_assert!(!new_poly.is_zero(), "replace_poly with zero poly");
         debug_assert!(idx < self.polys.len());
         // Debug-only check that leading monomial is preserved.
@@ -292,7 +293,7 @@ impl<F: Field + Copy> SBasis<F> {
     /// - For every `i`, `lm_degs[i] == polys[i].lm_deg()`.
     /// - No polynomial is zero.
     /// - `arrival[i]` is strictly ascending.
-    pub fn assert_canonical(&self, ring: &Ring<F>) {
+    pub fn assert_canonical<O: MonoOrder>(&self, ring: &Ring<F, O>) {
         let n = self.polys.len();
         assert_eq!(self.sevs.len(), n);
         assert_eq!(self.lms.len(), n, "lms cache length mismatch (ADR-010)");
@@ -327,12 +328,12 @@ impl<F: Field + Copy> SBasis<F> {
 /// already hold both `sev` values don't pay the hash-map-friendly
 /// `MonoTerm::divides` walk until the sev check passes.
 #[inline]
-pub fn divides_with_sev<F: Field + Copy + Send + Sync>(
+pub fn divides_with_sev<F: Field + Copy + Send + Sync, O: MonoOrder>(
     m_sev: u64,
     other_sev: u64,
     m: &MonoTerm,
     other: &MonoTerm,
-    ring: &Ring<F>,
+    ring: &Ring<F, O>,
 ) -> bool {
     if (m_sev & !other_sev) != 0 {
         return false;
@@ -343,19 +344,19 @@ pub fn divides_with_sev<F: Field + Copy + Send + Sync>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ordering::DegRevLex;
     use ark_bls12_381::Fr;
     use ark_ff::One;
-    use crate::ordering::MonoOrder;
 
-    fn mk_ring(nvars: u32) -> Ring<Fr> {
-        Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap()
+    fn mk_ring(nvars: u32) -> Ring<Fr, DegRevLex> {
+        Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap()
     }
 
-    fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+    fn mono(r: &Ring<Fr, DegRevLex>, e: &[u32]) -> MonoTerm {
         MonoTerm::from_exponents(r, e).unwrap()
     }
 
-    fn poly1(r: &Ring<Fr>, c: Fr, e: &[u32]) -> Poly<Fr> {
+    fn poly1(r: &Ring<Fr, DegRevLex>, c: Fr, e: &[u32]) -> Poly<Fr> {
         Poly::monomial(r, c, mono(r, e))
     }
 

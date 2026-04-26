@@ -34,6 +34,7 @@
 
 use crate::field::Field;
 use crate::monomial::MonoTerm;
+use crate::ordering::MonoOrder;
 use crate::poly::{Poly, PolyCursor};
 use crate::ring::Ring;
 use std::collections::BinaryHeap;
@@ -155,10 +156,10 @@ impl Ord for HeapNode {
 /// Lifetime `'a` ties this state to the borrow of the
 /// [`SBasis`] whose polynomials the [`Reducer`]s reference.
 #[derive(Debug)]
-pub struct ReducerHeap<'a, F: Field + Copy + Send + Sync> {
+pub struct ReducerHeap<'a, F: Field + Copy + Send + Sync, O: MonoOrder> {
     /// Owning ring reference. All monomials in the heap belong
     /// to this ring.
-    ring: Arc<Ring<F>>,
+    ring: Arc<Ring<F, O>>,
     /// Slab of in-flight reducers. Indexed by [`HeapNode::reducer_idx`].
     /// Grows monotonically — a reducer is never removed from the
     /// slab once added (its tail may be exhausted, in which case
@@ -175,12 +176,12 @@ pub struct ReducerHeap<'a, F: Field + Copy + Send + Sync> {
     sugar: u32,
 }
 
-impl<'a, F: Field + Copy + Send + Sync> ReducerHeap<'a, F> {
+impl<'a, F: Field + Copy + Send + Sync, O: MonoOrder> ReducerHeap<'a, F, O> {
     /// Construct an empty reducer state for a reduction starting
     /// at `initial_sugar`. Adding the LObject's polynomial as the
     /// first reducer (with `multiplier = 1`, `coeff = 1`) is the
     /// caller's responsibility (deferred to phase 4).
-    pub fn new(ring: Arc<Ring<F>>, initial_sugar: u32) -> Self {
+    pub fn new(ring: Arc<Ring<F, O>>, initial_sugar: u32) -> Self {
         Self {
             ring,
             reducers: Vec::new(),
@@ -191,7 +192,7 @@ impl<'a, F: Field + Copy + Send + Sync> ReducerHeap<'a, F> {
 
     /// Borrow the ring this heap operates over.
     #[inline]
-    pub fn ring(&self) -> &Arc<Ring<F>> {
+    pub fn ring(&self) -> &Arc<Ring<F, O>> {
         &self.ring
     }
 
@@ -359,11 +360,7 @@ impl<'a, F: Field + Copy + Send + Sync> ReducerHeap<'a, F> {
                     let multiplier = m
                         .div(g_lm, &self.ring)
                         .expect("find_divisor's contract: lm(g) divides m");
-                    debug_assert_eq!(
-                        g.lm_coeff(),
-                        F::one(),
-                        "basis polynomials must be monic"
-                    );
+                    debug_assert_eq!(g.lm_coeff(), F::one(), "basis polynomials must be monic");
                     let coeff = -c;
                     let m_deg = multiplier.total_deg();
                     let new_sugar = g_sugar.saturating_add(m_deg);
@@ -477,18 +474,18 @@ impl<'a, F: Field + Copy + Send + Sync> ReducerHeap<'a, F> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ordering::DegRevLex;
     use ark_bls12_381::Fr;
     use ark_ff::One;
-    use crate::ordering::MonoOrder;
 
-    fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
-        Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
+    fn mk_ring(nvars: u32) -> Arc<Ring<Fr, DegRevLex>> {
+        Arc::new(Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap())
     }
 
     #[test]
     fn empty_reducer_heap_constructs() {
         let r = mk_ring(3);
-        let h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
+        let h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
         assert_eq!(h.reducer_count(), 0);
         assert_eq!(h.heap_len(), 0);
         assert_eq!(h.sugar(), 0);
@@ -497,7 +494,7 @@ mod tests {
     #[test]
     fn initial_sugar_is_preserved() {
         let r = mk_ring(3);
-        let h = ReducerHeap::<Fr>::new(Arc::clone(&r), 17);
+        let h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 17);
         assert_eq!(h.sugar(), 17);
     }
 
@@ -600,7 +597,7 @@ mod tests {
     #[test]
     fn empty_heap_pop_and_peek_return_none() {
         let r = mk_ring(3);
-        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
         assert!(h.heap_is_empty());
         assert!(h.peek_max().is_none());
         assert!(h.pop_max().is_none());
@@ -610,7 +607,7 @@ mod tests {
     #[test]
     fn push_then_pop_single_node() {
         let r = mk_ring(3);
-        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
         let n = HeapNode {
             cmp_key: [1, 2, 3, 4],
             reducer_idx: 42,
@@ -630,10 +627,16 @@ mod tests {
         // that draining pops them in descending degrevlex order
         // (the same order the slow reference produces).
         let r = mk_ring(3);
-        for &seed in &[0x1234_5678_9abc_def0u64, 0xdead_beef_cafe_babe, 1, 2, 0xff_ff] {
+        for &seed in &[
+            0x1234_5678_9abc_def0u64,
+            0xdead_beef_cafe_babe,
+            1,
+            2,
+            0xff_ff,
+        ] {
             for &n in &[1usize, 2, 5, 16, 64, 200] {
                 let nodes = pseudo_random_nodes(n, seed);
-                let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
+                let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
                 for node in &nodes {
                     h.push_node(node.clone());
                 }
@@ -659,14 +662,14 @@ mod tests {
         // that the next pop_max returns.
         let r = mk_ring(3);
         let nodes = pseudo_random_nodes(50, 0xfeed_face);
-        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
         for node in &nodes {
             h.push_node(node.clone());
             let peek_key = h.peek_max().unwrap().cmp_key;
             // Don't actually pop — instead, verify that on the
             // *next* pop later we'd see this key. Take a snapshot
             // by cloning the heap state for the check.
-            let mut h2 = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
+            let mut h2 = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
             // Re-build h2 from the underlying BinaryHeap's iterator
             // to avoid moving h.
             for n2 in h.heap.iter() {
@@ -684,7 +687,7 @@ mod tests {
         // lifecycle that pop-with-cancellation will exercise).
         let r = mk_ring(3);
         let nodes = pseudo_random_nodes(30, 0xa1b2_c3d4);
-        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
 
         // Push first 20.
         for n in &nodes[..20] {
@@ -716,16 +719,14 @@ mod tests {
     use crate::monomial::MonoTerm;
     use crate::poly::Poly;
 
-    fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+    fn mono(r: &Ring<Fr, DegRevLex>, e: &[u32]) -> MonoTerm {
         MonoTerm::from_exponents(r, e).unwrap()
     }
 
     /// Helper: collect the full output of pop_with_cancellation
     /// into a Vec until the heap drains. Used as a "drive the
     /// reducer to completion" pattern in tests.
-    fn drain_with_cancellation<'a>(
-        h: &mut ReducerHeap<'a, Fr>,
-    ) -> Vec<(Fr, MonoTerm)> {
+    fn drain_with_cancellation<'a>(h: &mut ReducerHeap<'a, Fr, DegRevLex>) -> Vec<(Fr, MonoTerm)> {
         let mut out = Vec::new();
         while let Some(pair) = h.pop_with_cancellation() {
             out.push(pair);
@@ -743,12 +744,12 @@ mod tests {
         let p = Poly::from_terms(
             &r,
             vec![
-                (Fr::from(5u64), mono(&r, &[3, 0, 0])),  // x_0^3
-                (Fr::from(2u64), mono(&r, &[1, 1, 0])),  // x_0 x_1
-                (Fr::from(1u64), mono(&r, &[0, 0, 2])),  // x_2^2
+                (Fr::from(5u64), mono(&r, &[3, 0, 0])), // x_0^3
+                (Fr::from(2u64), mono(&r, &[1, 1, 0])), // x_0 x_1
+                (Fr::from(1u64), mono(&r, &[0, 0, 2])), // x_2^2
             ],
         );
-        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
         h.push_reducer(Reducer {
             poly: &p,
             multiplier: one,
@@ -785,7 +786,7 @@ mod tests {
         let one = MonoTerm::one(&r);
         let neg_one = -Fr::one();
 
-        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
         h.push_reducer(Reducer {
             poly: &p,
             multiplier: one,
@@ -816,14 +817,20 @@ mod tests {
         let r = mk_ring(3);
         let p = Poly::from_terms(
             &r,
-            vec![(Fr::from(5u64), mono(&r, &[2, 0, 0])), (Fr::from(3u64), mono(&r, &[0, 1, 0]))],
+            vec![
+                (Fr::from(5u64), mono(&r, &[2, 0, 0])),
+                (Fr::from(3u64), mono(&r, &[0, 1, 0])),
+            ],
         );
         let q = Poly::from_terms(
             &r,
-            vec![(Fr::from(2u64), mono(&r, &[2, 0, 0])), (Fr::from(7u64), mono(&r, &[0, 0, 1]))],
+            vec![
+                (Fr::from(2u64), mono(&r, &[2, 0, 0])),
+                (Fr::from(7u64), mono(&r, &[0, 0, 1])),
+            ],
         );
         let one = MonoTerm::one(&r);
-        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
         h.push_reducer(Reducer {
             poly: &p,
             multiplier: one,
@@ -864,10 +871,7 @@ mod tests {
                 vec![(7, vec![3, 0, 0, 0]), (1, vec![0, 0, 0, 1])],
                 vec![(2, vec![1, 2, 0, 0])],
             ),
-            (
-                vec![],
-                vec![(11, vec![1, 1, 1, 0])],
-            ),
+            (vec![], vec![(11, vec![1, 1, 1, 0])]),
         ];
         for (p_terms, q_terms) in pairs {
             let p = Poly::from_terms(
@@ -887,12 +891,11 @@ mod tests {
 
             // Reference: Poly::add via the geobucket-friendly merge.
             let want = p.add(&q, &r);
-            let want_terms: Vec<(Fr, MonoTerm)> =
-                want.iter().map(|(c, m)| (c, *m)).collect();
+            let want_terms: Vec<(Fr, MonoTerm)> = want.iter().map(|(c, m)| (c, *m)).collect();
 
             // Heap reducer: 1*p + 1*q.
             let one = MonoTerm::one(&r);
-            let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
+            let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
             h.push_reducer(Reducer {
                 poly: &p,
                 multiplier: one,
@@ -918,11 +921,7 @@ mod tests {
     /// Reference reduction using Poly::sub_mul_term in a loop.
     /// Equivalent to the heap reducer but algorithmically distinct;
     /// used as the property-test oracle.
-    fn reference_reduce(
-        ring: &Ring<Fr>,
-        f: Poly<Fr>,
-        basis: &[Poly<Fr>],
-    ) -> Poly<Fr> {
+    fn reference_reduce(ring: &Ring<Fr, DegRevLex>, f: Poly<Fr>, basis: &[Poly<Fr>]) -> Poly<Fr> {
         let mut current = f;
         loop {
             if current.is_zero() {
@@ -947,9 +946,9 @@ mod tests {
                     }
                     let lm2 = *working.leading().unwrap().1;
                     let lc2 = working.lm_coeff();
-                    let new_idx = basis.iter().position(|g| {
-                        !g.is_zero() && g.leading().unwrap().1.divides(&lm2, ring)
-                    });
+                    let new_idx = basis
+                        .iter()
+                        .position(|g| !g.is_zero() && g.leading().unwrap().1.divides(&lm2, ring));
                     if let Some(j) = new_idx {
                         let g = &basis[j];
                         let g_lm = g.leading().unwrap().1;
@@ -981,12 +980,12 @@ mod tests {
     /// Helper: run the heap reducer to normal form against a basis,
     /// using the same first-divisor-found policy as the reference.
     fn heap_reduce<'a>(
-        ring: Arc<Ring<Fr>>,
+        ring: Arc<Ring<Fr, DegRevLex>>,
         f: &'a Poly<Fr>,
         basis: &'a [Poly<Fr>],
         sugars: &[u32],
     ) -> Poly<Fr> {
-        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&ring), f.lm_deg());
+        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&ring), f.lm_deg());
         let one = MonoTerm::one(&ring);
         h.push_reducer(Reducer {
             poly: f,
@@ -1130,13 +1129,17 @@ mod tests {
             ),
             // basis = { x*y - z }, f = x*y*z
             (
-                vec![
-                    vec![(Fr::one(), vec![1, 1, 0]), (neg_one, vec![0, 0, 1])],
-                ],
+                vec![vec![(Fr::one(), vec![1, 1, 0]), (neg_one, vec![0, 0, 1])]],
                 vec![(Fr::one(), vec![1, 1, 1])],
             ),
             // Empty basis: f reduces to itself.
-            (vec![], vec![(Fr::from(3u64), vec![2, 0, 1]), (Fr::from(5u64), vec![0, 1, 1])]),
+            (
+                vec![],
+                vec![
+                    (Fr::from(3u64), vec![2, 0, 1]),
+                    (Fr::from(5u64), vec![0, 1, 1]),
+                ],
+            ),
             // basis = { x }, f = x^3 + x*y + 7  →  survivor = 7
             (
                 vec![vec![(Fr::one(), vec![1, 0, 0])]],
@@ -1154,10 +1157,7 @@ mod tests {
                 .map(|terms| {
                     Poly::from_terms(
                         &r,
-                        terms
-                            .into_iter()
-                            .map(|(c, e)| (c, mono(&r, &e)))
-                            .collect(),
+                        terms.into_iter().map(|(c, e)| (c, mono(&r, &e))).collect(),
                     )
                 })
                 .collect();
@@ -1183,7 +1183,7 @@ mod tests {
         let r = mk_ring(2);
         let p = Poly::from_terms(&r, vec![(Fr::one(), mono(&r, &[1, 0]))]);
         let one = MonoTerm::one(&r);
-        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 7);
+        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 7);
         assert_eq!(h.sugar(), 7);
         h.push_reducer(Reducer {
             poly: &p,
@@ -1211,7 +1211,7 @@ mod tests {
         // reducer_idx should both be poppable. Order between
         // them is unspecified, but neither should be lost.
         let r = mk_ring(3);
-        let mut h = ReducerHeap::<Fr>::new(Arc::clone(&r), 0);
+        let mut h = ReducerHeap::<Fr, DegRevLex>::new(Arc::clone(&r), 0);
         let a = HeapNode {
             cmp_key: [9, 0, 0, 0],
             reducer_idx: 1,

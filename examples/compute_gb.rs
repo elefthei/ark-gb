@@ -18,15 +18,15 @@ use ark_bls12_381::Fr;
 use ark_ff::{One, Zero};
 use ark_gb::compute_gb;
 use ark_gb::monomial::MonoTerm;
-use ark_gb::ordering::MonoOrder;
+use ark_gb::ordering::DegRevLex;
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 
-fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
-    Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
+fn mk_ring(nvars: u32) -> Arc<Ring<Fr, DegRevLex>> {
+    Arc::new(Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap())
 }
 
-fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+fn mono(r: &Ring<Fr, DegRevLex>, e: &[u32]) -> MonoTerm {
     MonoTerm::from_exponents(r, e).unwrap()
 }
 
@@ -34,7 +34,7 @@ fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
 /// variable names. Good enough for human inspection; not a parser-
 /// compatible round-trip (see the fixture parser in the tests for
 /// that).
-fn poly_to_string(p: &Poly<Fr>, ring: &Ring<Fr>, var_names: &[&str]) -> String {
+fn poly_to_string(p: &Poly<Fr>, ring: &Ring<Fr, DegRevLex>, var_names: &[&str]) -> String {
     if p.is_zero() {
         return "0".to_string();
     }
@@ -80,7 +80,12 @@ fn poly_to_string(p: &Poly<Fr>, ring: &Ring<Fr>, var_names: &[&str]) -> String {
     out
 }
 
-fn run_cyclic(ring: Arc<Ring<Fr>>, name: &str, input: Vec<Poly<Fr>>, var_names: &[&str]) {
+fn run_cyclic(
+    ring: Arc<Ring<Fr, DegRevLex>>,
+    name: &str,
+    input: Vec<Poly<Fr>>,
+    var_names: &[&str],
+) {
     println!("=== {} ===", name);
     let t = Instant::now();
     let gb = compute_gb(Arc::clone(&ring), input);
@@ -101,11 +106,19 @@ fn cyclic3() {
     let gens = vec![
         Poly::from_terms(
             &r,
-            vec![(one, m(&[1, 0, 0])), (one, m(&[0, 1, 0])), (one, m(&[0, 0, 1]))],
+            vec![
+                (one, m(&[1, 0, 0])),
+                (one, m(&[0, 1, 0])),
+                (one, m(&[0, 0, 1])),
+            ],
         ),
         Poly::from_terms(
             &r,
-            vec![(one, m(&[1, 1, 0])), (one, m(&[0, 1, 1])), (one, m(&[1, 0, 1]))],
+            vec![
+                (one, m(&[1, 1, 0])),
+                (one, m(&[0, 1, 1])),
+                (one, m(&[1, 0, 1])),
+            ],
         ),
         Poly::from_terms(&r, vec![(one, m(&[1, 1, 1])), (neg_one, m(&[0, 0, 0]))]),
     ];
@@ -150,7 +163,12 @@ fn cyclic4() {
             vec![(one, m(&[1, 1, 1, 1])), (neg_one, m(&[0, 0, 0, 0]))],
         ),
     ];
-    run_cyclic(r, "cyclic-4 over Fr (BLS12-381)", gens, &["a", "b", "c", "d"]);
+    run_cyclic(
+        r,
+        "cyclic-4 over Fr (BLS12-381)",
+        gens,
+        &["a", "b", "c", "d"],
+    );
 }
 
 fn cyclic5() {
@@ -204,7 +222,12 @@ fn cyclic5() {
             vec![(one, m(&[1, 1, 1, 1, 1])), (neg_one, m(&[0, 0, 0, 0, 0]))],
         ),
     ];
-    run_cyclic(r, "cyclic-5 over Fr (BLS12-381)", gens, &["a", "b", "c", "d", "e"]);
+    run_cyclic(
+        r,
+        "cyclic-5 over Fr (BLS12-381)",
+        gens,
+        &["a", "b", "c", "d", "e"],
+    );
 }
 
 fn main() {

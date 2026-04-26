@@ -15,7 +15,7 @@ use ark_bls12_381::Fr;
 use ark_ff::{One, Zero};
 use ark_gb::compute_gb;
 use ark_gb::monomial::MonoTerm;
-use ark_gb::ordering::MonoOrder;
+use ark_gb::ordering::DegRevLex;
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 
@@ -25,12 +25,12 @@ use ark_gb::ring::Ring;
 struct LineParser<'a> {
     src: &'a [u8],
     pos: usize,
-    ring: &'a Ring<Fr>,
+    ring: &'a Ring<Fr, DegRevLex>,
     var_names: &'a [&'a str],
 }
 
 impl<'a> LineParser<'a> {
-    fn new(src: &'a str, ring: &'a Ring<Fr>, var_names: &'a [&'a str]) -> Self {
+    fn new(src: &'a str, ring: &'a Ring<Fr, DegRevLex>, var_names: &'a [&'a str]) -> Self {
         Self {
             src: src.as_bytes(),
             pos: 0,
@@ -192,21 +192,17 @@ impl<'a> LineParser<'a> {
     }
 }
 
-fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
-    Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
+fn mk_ring(nvars: u32) -> Arc<Ring<Fr, DegRevLex>> {
+    Arc::new(Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap())
 }
 
-fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+fn mono(r: &Ring<Fr, DegRevLex>, e: &[u32]) -> MonoTerm {
     MonoTerm::from_exponents(r, e).unwrap()
 }
 
 /// Run `compute_gb` and validate the output via Buchberger's criterion.
 /// Panics on validation failure with the first witness of incorrectness.
-fn validate_gb(
-    name: &str,
-    ring: &Arc<Ring<Fr>>,
-    input: Vec<Poly<Fr>>,
-) -> Vec<Poly<Fr>> {
+fn validate_gb(name: &str, ring: &Arc<Ring<Fr, DegRevLex>>, input: Vec<Poly<Fr>>) -> Vec<Poly<Fr>> {
     let gb = compute_gb(Arc::clone(ring), input.clone());
     assert!(
         !gb.is_empty(),
@@ -240,7 +236,10 @@ fn cyclic3_matches_singular_fixture() {
     );
     let f3 = Poly::from_terms(
         &r,
-        vec![(Fr::one(), mono(&r, &[1, 1, 1])), (-Fr::one(), mono(&r, &[0, 0, 0]))],
+        vec![
+            (Fr::one(), mono(&r, &[1, 1, 1])),
+            (-Fr::one(), mono(&r, &[0, 0, 0])),
+        ],
     );
 
     let _gb = validate_gb("cyclic-3", &r, vec![f1, f2, f3]);
@@ -282,7 +281,13 @@ fn cyclic4_matches_singular_fixture() {
         ],
     );
     // abcd - 1
-    let f4 = Poly::from_terms(&r, vec![(Fr::one(), m(&[1, 1, 1, 1])), (-Fr::one(), m(&[0, 0, 0, 0]))]);
+    let f4 = Poly::from_terms(
+        &r,
+        vec![
+            (Fr::one(), m(&[1, 1, 1, 1])),
+            (-Fr::one(), m(&[0, 0, 0, 0])),
+        ],
+    );
 
     let _gb = validate_gb("cyclic-4", &r, vec![f1, f2, f3, f4]);
 }
@@ -339,7 +344,10 @@ fn cyclic5_matches_singular_fixture() {
     // abcde - 1
     let f5 = Poly::from_terms(
         &r,
-        vec![(Fr::one(), m(&[1, 1, 1, 1, 1])), (-Fr::one(), m(&[0, 0, 0, 0, 0]))],
+        vec![
+            (Fr::one(), m(&[1, 1, 1, 1, 1])),
+            (-Fr::one(), m(&[0, 0, 0, 0, 0])),
+        ],
     );
 
     let _gb = validate_gb("cyclic-5", &r, vec![f1, f2, f3, f4, f5]);

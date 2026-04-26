@@ -7,7 +7,7 @@
 //! Ported from zippel's `benches/groebner_shared.rs`, which itself is a
 //! translation of Singular's `polylib.lib` (`proc cyclic`, `proc katsura`,
 //! `proc kat_var`). The arithmetic is reformulated for ark-gb's
-//! [`Poly<F>`] / [`Ring<F>`] abstractions.
+//! [`Poly<F>`] / [`Ring<F, DegRevLex>`] abstractions.
 
 #![allow(dead_code)]
 
@@ -16,7 +16,7 @@ use std::sync::Arc;
 use ark_bls12_381::Fr;
 use ark_ff::One;
 use ark_gb::monomial::MonoTerm;
-use ark_gb::ordering::MonoOrder;
+use ark_gb::ordering::{DegRevLex, Elim, MonoOrder};
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 
@@ -42,27 +42,27 @@ pub const CYCLIC_SIZES: &[usize] = &[4, 5];
 // Ring + monomial constructors.
 // ---------------------------------------------------------------------------
 
-pub fn grevlex_ring(nvars: usize) -> Arc<Ring<Fr>> {
+pub fn grevlex_ring(nvars: usize) -> Arc<Ring<Fr, DegRevLex>> {
     Arc::new(
-        Ring::<Fr>::new(nvars as u32, MonoOrder::DegRevLex)
+        Ring::<Fr, DegRevLex>::new(nvars as u32, DegRevLex)
             .expect("nvars within ark-gb monomial limits"),
     )
 }
 
-pub fn elim_ring(nvars: usize) -> Arc<Ring<Fr>> {
+pub fn elim_ring(nvars: usize) -> Arc<Ring<Fr, Elim>> {
     let split = (nvars / 2) as u32;
     Arc::new(
-        Ring::<Fr>::new(nvars as u32, MonoOrder::Elim { split })
+        Ring::<Fr, Elim>::new(nvars as u32, Elim { split })
             .expect("nvars within ark-gb monomial limits"),
     )
 }
 
-fn unit_mono(ring: &Ring<Fr>) -> MonoTerm {
+fn unit_mono<O: MonoOrder + 'static>(ring: &Ring<Fr, O>) -> MonoTerm {
     let nvars = ring.nvars() as usize;
     MonoTerm::from_exponents(ring, &vec![0u32; nvars]).unwrap()
 }
 
-fn var_mono(ring: &Ring<Fr>, i: usize) -> MonoTerm {
+fn var_mono<O: MonoOrder + 'static>(ring: &Ring<Fr, O>, i: usize) -> MonoTerm {
     let nvars = ring.nvars() as usize;
     let mut e = vec![0u32; nvars];
     e[i] = 1;
@@ -74,17 +74,17 @@ fn var_mono(ring: &Ring<Fr>, i: usize) -> MonoTerm {
 // ---------------------------------------------------------------------------
 
 /// Single-variable polynomial `x_i` (coefficient 1).
-pub fn var_poly(ring: &Ring<Fr>, i: usize) -> Poly<Fr> {
+pub fn var_poly<O: MonoOrder + 'static>(ring: &Ring<Fr, O>, i: usize) -> Poly<Fr> {
     Poly::from_terms(ring, vec![(Fr::one(), var_mono(ring, i))])
 }
 
 /// Constant polynomial `1`.
-pub fn one_poly(ring: &Ring<Fr>) -> Poly<Fr> {
+pub fn one_poly<O: MonoOrder + 'static>(ring: &Ring<Fr, O>) -> Poly<Fr> {
     Poly::from_terms(ring, vec![(Fr::one(), unit_mono(ring))])
 }
 
 /// Iterated product `f_0 * f_1 * ... * f_{k-1}`. Empty product is `1`.
-pub fn product_poly<I>(ring: &Ring<Fr>, factors: I) -> Poly<Fr>
+pub fn product_poly<I, O: MonoOrder + 'static>(ring: &Ring<Fr, O>, factors: I) -> Poly<Fr>
 where
     I: IntoIterator<Item = Poly<Fr>>,
 {
@@ -111,7 +111,7 @@ where
 // The `m[1..n], m[1..n]` doubling lets `product(m, i..i+j)` wrap; we
 // implement the wrap with `% n`.
 
-pub fn cyclic_polys(ring: &Ring<Fr>) -> Vec<Poly<Fr>> {
+pub fn cyclic_polys<O: MonoOrder + 'static>(ring: &Ring<Fr, O>) -> Vec<Poly<Fr>> {
     let n = ring.nvars() as usize;
     assert!(n >= 1, "Cyclic-n requires n >= 1");
 
@@ -145,7 +145,7 @@ pub fn cyclic_polys(ring: &Ring<Fr>) -> Vec<Poly<Fr>> {
 // Matches Sage's `sage.rings.ideal.Katsura(R, n_arg)`: `n_arg` variables
 // produce `n_arg` generators with Singular-internal `n = n_arg - 1`.
 
-pub fn katsura_polys(ring: &Ring<Fr>) -> Vec<Poly<Fr>> {
+pub fn katsura_polys<O: MonoOrder + 'static>(ring: &Ring<Fr, O>) -> Vec<Poly<Fr>> {
     let n_arg = ring.nvars() as usize;
     assert!(n_arg >= 1, "Katsura-n requires at least one variable");
     let n = (n_arg - 1) as isize;
@@ -193,12 +193,12 @@ pub fn katsura_polys(ring: &Ring<Fr>) -> Vec<Poly<Fr>> {
 // Convenience: build (ring, polys) for a given family + size.
 // ---------------------------------------------------------------------------
 
-pub fn cyclic_input(n: usize, ring: &Arc<Ring<Fr>>) -> Vec<Poly<Fr>> {
+pub fn cyclic_input<O: MonoOrder + 'static>(n: usize, ring: &Arc<Ring<Fr, O>>) -> Vec<Poly<Fr>> {
     assert_eq!(ring.nvars() as usize, n);
     cyclic_polys(ring)
 }
 
-pub fn katsura_input(n: usize, ring: &Arc<Ring<Fr>>) -> Vec<Poly<Fr>> {
+pub fn katsura_input<O: MonoOrder + 'static>(n: usize, ring: &Arc<Ring<Fr, O>>) -> Vec<Poly<Fr>> {
     assert_eq!(ring.nvars() as usize, n);
     katsura_polys(ring)
 }

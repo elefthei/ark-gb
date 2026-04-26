@@ -19,18 +19,18 @@
 use ark_bls12_381::Fr;
 use ark_ff::One;
 use ark_gb::gm;
-use ark_gb::{LSet, MonoOrder, MonoTerm, Poly, Ring, SBasis};
+use ark_gb::{DegRevLex, LSet, MonoTerm, Poly, Ring, SBasis};
 use proptest::prelude::*;
 
 const MAX_VARS: u32 = 4;
 const MAX_EXP: u32 = 3;
 const MAX_BASIS: usize = 8;
 
-fn ring_strategy() -> impl Strategy<Value = Ring<Fr>> {
-    (2u32..=MAX_VARS).prop_map(|n| Ring::<Fr>::new(n, MonoOrder::DegRevLex).unwrap())
+fn ring_strategy() -> impl Strategy<Value = Ring<Fr, DegRevLex>> {
+    (2u32..=MAX_VARS).prop_map(|n| Ring::<Fr, DegRevLex>::new(n, DegRevLex).unwrap())
 }
 
-fn lm_strategy(ring: Ring<Fr>) -> impl Strategy<Value = MonoTerm> {
+fn lm_strategy(ring: Ring<Fr, DegRevLex>) -> impl Strategy<Value = MonoTerm> {
     let n = ring.nvars() as usize;
     prop::collection::vec(0u32..=MAX_EXP, n).prop_filter_map("need nonzero", move |e| {
         if e.iter().all(|&x| x == 0) {
@@ -40,7 +40,7 @@ fn lm_strategy(ring: Ring<Fr>) -> impl Strategy<Value = MonoTerm> {
     })
 }
 
-fn scenario_strategy() -> impl Strategy<Value = (Ring<Fr>, Vec<MonoTerm>, MonoTerm)> {
+fn scenario_strategy() -> impl Strategy<Value = (Ring<Fr, DegRevLex>, Vec<MonoTerm>, MonoTerm)> {
     ring_strategy().prop_flat_map(|r| {
         let r1 = r.clone();
         let r2 = r.clone();
@@ -54,7 +54,7 @@ fn scenario_strategy() -> impl Strategy<Value = (Ring<Fr>, Vec<MonoTerm>, MonoTe
 /// Returns `(i, j)` index pairs only; the LCMs are deterministic
 /// from the inputs so we don't need to check them separately.
 fn slow_enterpairs(
-    ring: &Ring<Fr>,
+    ring: &Ring<Fr, DegRevLex>,
     lms: &[MonoTerm],
     redundant: &[bool],
     h_lm: &MonoTerm,
@@ -104,7 +104,7 @@ fn slow_enterpairs(
         .collect()
 }
 
-fn exp_coprime(ring: &Ring<Fr>, a: &MonoTerm, b: &MonoTerm) -> bool {
+fn exp_coprime(ring: &Ring<Fr, DegRevLex>, a: &MonoTerm, b: &MonoTerm) -> bool {
     for i in 0..ring.nvars() {
         let ea = a.exponent(ring, i).unwrap();
         let eb = b.exponent(ring, i).unwrap();

@@ -26,6 +26,7 @@ use crate::bset::BSet;
 use crate::field::Field;
 use crate::lset::LSet;
 use crate::monomial::MonoTerm;
+use crate::ordering::MonoOrder;
 use crate::pair::Pair;
 use crate::poly::Poly;
 use crate::ring::Ring;
@@ -43,8 +44,8 @@ use crate::sbasis::SBasis;
 /// S-polynomial reduces to zero before it can contribute anything
 /// new to the basis.
 #[allow(clippy::too_many_arguments)]
-pub fn enter_one_pair_normal<F: Field + Copy + Send + Sync>(
-    ring: &Ring<F>,
+pub fn enter_one_pair_normal<F: Field + Copy + Send + Sync, O: MonoOrder>(
+    ring: &Ring<F, O>,
     s_basis: &SBasis<F>,
     s_idx: u32,
     h_idx: u32,
@@ -100,10 +101,10 @@ pub fn enter_one_pair_normal<F: Field + Copy + Send + Sync>(
 
 /// Coprime check on monomials: no variable has nonzero exponent in
 /// both. Called *after* the sev pre-filter rejects obvious shares.
-fn monomials_are_coprime<F: Field + Copy + Send + Sync>(
+fn monomials_are_coprime<F: Field + Copy + Send + Sync, O: MonoOrder>(
     a: &MonoTerm,
     b: &MonoTerm,
-    ring: &Ring<F>,
+    ring: &Ring<F, O>,
 ) -> bool {
     let n = ring.nvars();
     for i in 0..n {
@@ -133,8 +134,8 @@ fn monomials_are_coprime<F: Field + Copy + Send + Sync>(
 ///    the pair is covered by the chain `(i, h), (j, h)` and gets
 ///    tombstoned. The equality guards preserve the pair whose LCM
 ///    would collapse onto an S–h pair.
-pub fn chain_crit_normal<F: Field + Copy + Send + Sync>(
-    ring: &Ring<F>,
+pub fn chain_crit_normal<F: Field + Copy + Send + Sync, O: MonoOrder>(
+    ring: &Ring<F, O>,
     s_basis: &SBasis<F>,
     h_lm: &MonoTerm,
     h_lm_sev: u64,
@@ -252,8 +253,8 @@ pub fn chain_crit_normal<F: Field + Copy + Send + Sync>(
 /// returned count. The returned value is the number of pairs that
 /// actually made it into L (after both phases of the chain crit).
 #[allow(clippy::too_many_arguments)]
-pub fn enterpairs<F: Field + Copy + Send + Sync>(
-    ring: &Ring<F>,
+pub fn enterpairs<F: Field + Copy + Send + Sync, O: MonoOrder>(
+    ring: &Ring<F, O>,
     s_basis: &SBasis<F>,
     h_idx: u32,
     h_poly: &Poly<F>,
@@ -291,8 +292,8 @@ pub fn enterpairs<F: Field + Copy + Send + Sync>(
 /// `enterS`: append `h` to the basis with redundancy marking. This
 /// is just `SBasis::insert`; re-exported here so the bba driver's
 /// call site reads `enter_s(h)` symmetric with `enterpairs(h)`.
-pub fn enter_s<F: Field + Copy + Send + Sync>(
-    ring: &Ring<F>,
+pub fn enter_s<F: Field + Copy + Send + Sync, O: MonoOrder>(
+    ring: &Ring<F, O>,
     s_basis: &mut SBasis<F>,
     h: Poly<F>,
 ) -> usize {
@@ -302,15 +303,15 @@ pub fn enter_s<F: Field + Copy + Send + Sync>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ordering::MonoOrder;
+    use crate::ordering::DegRevLex;
     use ark_bls12_381::Fr;
     use ark_ff::One;
 
-    fn mk_ring(nvars: u32) -> Ring<Fr> {
-        Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap()
+    fn mk_ring(nvars: u32) -> Ring<Fr, DegRevLex> {
+        Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap()
     }
 
-    fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+    fn mono(r: &Ring<Fr, DegRevLex>, e: &[u32]) -> MonoTerm {
         MonoTerm::from_exponents(r, e).unwrap()
     }
 
@@ -496,7 +497,10 @@ mod tests {
         );
         let f_2 = Poly::from_terms(
             &r,
-            vec![(Fr::one(), mono(&r, &[1, 1, 1])), (-Fr::one(), mono(&r, &[0, 0, 0]))],
+            vec![
+                (Fr::one(), mono(&r, &[1, 1, 1])),
+                (-Fr::one(), mono(&r, &[0, 0, 0])),
+            ],
         );
 
         let h0_idx = enter_s(&r, &mut s, f_0.clone()) as u32;

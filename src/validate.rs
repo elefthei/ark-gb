@@ -33,6 +33,7 @@ use std::sync::Arc;
 use crate::bba::reduce_lobject_geobucket;
 use crate::field::Field;
 use crate::lobject::LObject;
+use crate::ordering::MonoOrder;
 use crate::pair::Pair;
 use crate::poly::Poly;
 use crate::ring::Ring;
@@ -66,8 +67,8 @@ pub enum GbError<F: Field + Copy + Send + Sync + 'static> {
 /// inserted in input order; each insert triggers
 /// [`SBasis::clear_redundant_for`], which is a no-op for a properly
 /// reduced GB but keeps the contract the reducer relies on.
-fn build_sbasis<F: Field + Copy + Send + Sync + 'static>(
-    ring: &Ring<F>,
+fn build_sbasis<F: Field + Copy + Send + Sync + 'static, O: MonoOrder>(
+    ring: &Ring<F, O>,
     basis: &[Poly<F>],
 ) -> SBasis<F> {
     let mut sb = SBasis::new();
@@ -91,8 +92,8 @@ fn build_sbasis<F: Field + Copy + Send + Sync + 'static>(
 /// The basis is treated as a set of generators and is internally
 /// re-wrapped in an [`SBasis`]; pass the output of
 /// [`compute_gb`](crate::bba::compute_gb) directly.
-pub fn normal_form<F: Field + Copy + Send + Sync + 'static>(
-    ring: &Arc<Ring<F>>,
+pub fn normal_form<F: Field + Copy + Send + Sync + 'static, O: MonoOrder>(
+    ring: &Arc<Ring<F, O>>,
     f: &Poly<F>,
     basis: &[Poly<F>],
 ) -> Poly<F> {
@@ -117,8 +118,8 @@ pub fn normal_form<F: Field + Copy + Send + Sync + 'static>(
 /// normal-form reduction. For `|gb|` in the tens to hundreds and
 /// release-mode reductions, this is the right shape for a
 /// regression check.
-pub fn is_groebner_basis<F: Field + Copy + Send + Sync + 'static>(
-    ring: &Arc<Ring<F>>,
+pub fn is_groebner_basis<F: Field + Copy + Send + Sync + 'static, O: MonoOrder>(
+    ring: &Arc<Ring<F, O>>,
     input: &[Poly<F>],
     gb: &[Poly<F>],
 ) -> Result<(), GbError<F>> {

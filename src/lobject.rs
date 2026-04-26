@@ -19,6 +19,7 @@ use std::sync::Arc;
 use crate::field::Field;
 use crate::kbucket::KBucket;
 use crate::monomial::MonoTerm;
+use crate::ordering::MonoOrder;
 use crate::pair::Pair;
 use crate::poly::Poly;
 use crate::ring::Ring;
@@ -29,9 +30,9 @@ use crate::ring::Ring;
 /// single-owner). A later parallel driver passes `LObject`s between
 /// workers by move.
 #[derive(Debug)]
-pub struct LObject<F: Field + Copy> {
+pub struct LObject<F: Field + Copy, O: MonoOrder> {
     /// The geobucket accumulator.
-    bucket: KBucket<F>,
+    bucket: KBucket<F, O>,
     /// Cached leading sev. 0 when the LObject is zero.
     lm_sev: u64,
     /// Cached leading coeff. 0 when zero.
@@ -44,17 +45,17 @@ pub struct LObject<F: Field + Copy> {
     sugar: u32,
 }
 
-impl<F: Field + Copy> LObject<F> {
+impl<F: Field + Copy, O: MonoOrder> LObject<F, O> {
     /// Build an `LObject` from an existing `Poly` with sugar seeded
     /// from the poly's leading total degree.
-    pub fn from_poly(ring: Arc<Ring<F>>, p: Poly<F>) -> Self {
+    pub fn from_poly(ring: Arc<Ring<F, O>>, p: Poly<F>) -> Self {
         let sugar = p.lm_deg();
         Self::from_poly_with_sugar(ring, p, sugar)
     }
 
     /// Build an `LObject` from an existing `Poly` with an explicit
     /// sugar value.
-    pub fn from_poly_with_sugar(ring: Arc<Ring<F>>, p: Poly<F>, sugar: u32) -> Self {
+    pub fn from_poly_with_sugar(ring: Arc<Ring<F, O>>, p: Poly<F>, sugar: u32) -> Self {
         let mut o = Self {
             bucket: KBucket::from_poly(ring, p),
             lm_sev: 0,
@@ -79,7 +80,12 @@ impl<F: Field + Copy> LObject<F> {
     /// empty (single-term inputs). Otherwise an `LObject` is
     /// returned; the caller is responsible for running divisor
     /// reductions on it.
-    pub fn from_spoly(ring: Arc<Ring<F>>, s_i: &Poly<F>, s_j: &Poly<F>, pair: &Pair) -> Option<Self> {
+    pub fn from_spoly(
+        ring: Arc<Ring<F, O>>,
+        s_i: &Poly<F>,
+        s_j: &Poly<F>,
+        pair: &Pair,
+    ) -> Option<Self> {
         debug_assert!(!s_i.is_zero() && !s_j.is_zero());
         let (_, lm_i) = s_i.leading()?;
         let (_, lm_j) = s_j.leading()?;
@@ -178,13 +184,13 @@ impl<F: Field + Copy> LObject<F> {
 
     /// Mutable access to the underlying bucket for reduction steps.
     #[inline]
-    pub fn bucket_mut(&mut self) -> &mut KBucket<F> {
+    pub fn bucket_mut(&mut self) -> &mut KBucket<F, O> {
         &mut self.bucket
     }
 
     /// Borrow the underlying ring (via the bucket).
     #[inline]
-    pub fn ring(&self) -> &Arc<Ring<F>> {
+    pub fn ring(&self) -> &Arc<Ring<F, O>> {
         self.bucket.ring()
     }
 
@@ -221,15 +227,15 @@ impl<F: Field + Copy> LObject<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ordering::DegRevLex;
     use ark_bls12_381::Fr;
     use ark_ff::One;
-    use crate::ordering::MonoOrder;
 
-    fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
-        Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
+    fn mk_ring(nvars: u32) -> Arc<Ring<Fr, DegRevLex>> {
+        Arc::new(Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap())
     }
 
-    fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+    fn mono(r: &Ring<Fr, DegRevLex>, e: &[u32]) -> MonoTerm {
         MonoTerm::from_exponents(r, e).unwrap()
     }
 
@@ -238,7 +244,10 @@ mod tests {
         let r = mk_ring(3);
         let p = Poly::from_terms(
             &r,
-            vec![(Fr::from(3u64), mono(&r, &[2, 1, 0])), (Fr::from(7u64), mono(&r, &[1, 0, 1]))],
+            vec![
+                (Fr::from(3u64), mono(&r, &[2, 1, 0])),
+                (Fr::from(7u64), mono(&r, &[1, 0, 1])),
+            ],
         );
         let p_sev = p.lm_sev();
         let o = LObject::from_poly(Arc::clone(&r), p);

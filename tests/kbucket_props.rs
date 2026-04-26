@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use ark_bls12_381::Fr;
 use ark_ff::{One, PrimeField, Zero};
-use ark_gb::{KBucket, MonoOrder, MonoTerm, Poly, Ring};
+use ark_gb::{DegRevLex, KBucket, MonoTerm, Poly, Ring};
 use proptest::prelude::*;
 
 const MAX_VARS: u32 = 5;
@@ -28,11 +28,14 @@ fn arb_nonzero_fr() -> impl Strategy<Value = Fr> {
     arb_fr().prop_map(|f| if f.is_zero() { Fr::one() } else { f })
 }
 
-fn ring_strategy() -> impl Strategy<Value = Arc<Ring<Fr>>> {
-    (1u32..=MAX_VARS).prop_map(|n| Arc::new(Ring::<Fr>::new(n, MonoOrder::DegRevLex).unwrap()))
+fn ring_strategy() -> impl Strategy<Value = Arc<Ring<Fr, DegRevLex>>> {
+    (1u32..=MAX_VARS).prop_map(|n| Arc::new(Ring::<Fr, DegRevLex>::new(n, DegRevLex).unwrap()))
 }
 
-fn poly_strategy(ring: Arc<Ring<Fr>>, max_terms: usize) -> impl Strategy<Value = Poly<Fr>> {
+fn poly_strategy(
+    ring: Arc<Ring<Fr, DegRevLex>>,
+    max_terms: usize,
+) -> impl Strategy<Value = Poly<Fr>> {
     let n = ring.nvars() as usize;
     prop::collection::vec(
         (arb_nonzero_fr(), prop::collection::vec(0u32..=MAX_EXP, n)),
@@ -47,7 +50,7 @@ fn poly_strategy(ring: Arc<Ring<Fr>>, max_terms: usize) -> impl Strategy<Value =
     })
 }
 
-fn mono_strategy(ring: Arc<Ring<Fr>>, max_exp: u32) -> impl Strategy<Value = MonoTerm> {
+fn mono_strategy(ring: Arc<Ring<Fr, DegRevLex>>, max_exp: u32) -> impl Strategy<Value = MonoTerm> {
     let n = ring.nvars() as usize;
     prop::collection::vec(0u32..=max_exp, n)
         .prop_map(move |e| MonoTerm::from_exponents(&ring, &e).unwrap())
@@ -55,8 +58,13 @@ fn mono_strategy(ring: Arc<Ring<Fr>>, max_exp: u32) -> impl Strategy<Value = Mon
 
 /// A seed polynomial plus a list of reducers `(m_i, c_i, q_i)`.
 #[allow(clippy::type_complexity)]
-fn bucket_workload_strategy()
--> impl Strategy<Value = (Arc<Ring<Fr>>, Poly<Fr>, Vec<(MonoTerm, Fr, Poly<Fr>)>)> {
+fn bucket_workload_strategy() -> impl Strategy<
+    Value = (
+        Arc<Ring<Fr, DegRevLex>>,
+        Poly<Fr>,
+        Vec<(MonoTerm, Fr, Poly<Fr>)>,
+    ),
+> {
     ring_strategy().prop_flat_map(|r| {
         // Cap monomial exponents at 3 and poly-term exponents at 3 so
         // their products (≤ 6) fit the 8-bit budget comfortably.
@@ -77,7 +85,11 @@ fn bucket_workload_strategy()
 /// `p ← p - c*m*q` via `Poly::sub_mul_term`. Per ADR-018,
 /// `sub_mul_term` is infallible in release; the workload strategies
 /// keep exponents well within the 7-bit budget.
-fn slow_fold(ring: &Ring<Fr>, seed: Poly<Fr>, ops: &[(MonoTerm, Fr, Poly<Fr>)]) -> Poly<Fr> {
+fn slow_fold(
+    ring: &Ring<Fr, DegRevLex>,
+    seed: Poly<Fr>,
+    ops: &[(MonoTerm, Fr, Poly<Fr>)],
+) -> Poly<Fr> {
     let mut acc = seed;
     for (m, c, q) in ops {
         acc = acc.sub_mul_term(*c, m, q, ring);
@@ -87,7 +99,7 @@ fn slow_fold(ring: &Ring<Fr>, seed: Poly<Fr>, ops: &[(MonoTerm, Fr, Poly<Fr>)]) 
 
 /// Bucket-path fold.
 fn bucket_fold(
-    ring: Arc<Ring<Fr>>,
+    ring: Arc<Ring<Fr, DegRevLex>>,
     seed: Poly<Fr>,
     ops: &[(MonoTerm, Fr, Poly<Fr>)],
 ) -> Poly<Fr> {
@@ -214,11 +226,11 @@ proptest! {
 
 // --- Fixed-input fixtures ---
 
-fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
-    Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
+fn mk_ring(nvars: u32) -> Arc<Ring<Fr, DegRevLex>> {
+    Arc::new(Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap())
 }
 
-fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+fn mono(r: &Ring<Fr, DegRevLex>, e: &[u32]) -> MonoTerm {
     MonoTerm::from_exponents(r, e).unwrap()
 }
 

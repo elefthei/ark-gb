@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::field::Field;
 use crate::lset::LSet;
+use crate::ordering::MonoOrder;
 use crate::poly::Poly;
 use crate::ring::Ring;
 
@@ -157,16 +158,13 @@ impl<F: Field + Copy + Send + Sync> SharedSBasis<F> {
     ///
     /// Takes an `inner` read-guard implicitly to walk the arrays.
     /// Writes redundancy flags via their atomics (no lock needed).
-    pub fn clear_redundant_for(&self, ring: &Ring<F>, idx: usize) {
+    pub fn clear_redundant_for<O: MonoOrder>(&self, ring: &Ring<F, O>, idx: usize) {
         let inner = self.inner.read().unwrap();
         let polys = &inner.polys;
         let sevs = &inner.sevs;
         debug_assert!(idx < polys.len());
         let h_lm_sev = sevs[idx];
-        let h_lm = *polys[idx]
-            .leading()
-            .expect("non-zero basis element")
-            .1;
+        let h_lm = *polys[idx].leading().expect("non-zero basis element").1;
         // Grab redundant-read-lock to index into the flag array.
         let r = self.redundant.read().unwrap();
         for i in 0..idx {
@@ -251,9 +249,9 @@ impl Default for SharedLSet {
 /// via `into_basis`, which unwraps the inner `Arc` (cheap because
 /// no worker is holding it any more).
 #[derive(Debug)]
-pub struct Computation<F: Field + Copy + Send + Sync> {
+pub struct Computation<F: Field + Copy + Send + Sync, O: MonoOrder> {
     /// The ring — immutable, shared by all workers.
-    pub ring: Arc<Ring<F>>,
+    pub ring: Arc<Ring<F, O>>,
     /// The growing basis.
     pub basis: SharedSBasis<F>,
     /// The pair queue.
@@ -296,9 +294,9 @@ pub struct Computation<F: Field + Copy + Send + Sync> {
     pub insert_mutex: Mutex<()>,
 }
 
-impl<F: Field + Copy + Send + Sync> Computation<F> {
+impl<F: Field + Copy + Send + Sync, O: MonoOrder> Computation<F, O> {
     /// Fresh computation.
-    pub fn new(ring: Arc<Ring<F>>) -> Self {
+    pub fn new(ring: Arc<Ring<F, O>>) -> Self {
         Self {
             ring,
             basis: SharedSBasis::new(),
@@ -345,12 +343,12 @@ impl<F: Field + Copy + Send + Sync> Computation<F> {
 mod tests {
     use super::*;
     use crate::monomial::MonoTerm;
-    use crate::ordering::MonoOrder;
+    use crate::ordering::DegRevLex;
     use ark_bls12_381::Fr;
     use ark_ff::One;
 
-    fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
-        Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
+    fn mk_ring(nvars: u32) -> Arc<Ring<Fr, DegRevLex>> {
+        Arc::new(Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap())
     }
 
     #[test]

@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ark_bls12_381::Fr;
-use ark_gb::{KBucket, MonoOrder, MonoTerm, Poly, Ring};
+use ark_gb::{DegRevLex, KBucket, MonoTerm, Poly, Ring};
 
 /// Deterministic LCG used to generate all random data.
 struct Lcg(u64);
@@ -41,11 +41,11 @@ impl Lcg {
     }
 }
 
-fn build_ring() -> Arc<Ring<Fr>> {
-    Arc::new(Ring::<Fr>::new(8, MonoOrder::DegRevLex).unwrap())
+fn build_ring() -> Arc<Ring<Fr, DegRevLex>> {
+    Arc::new(Ring::<Fr, DegRevLex>::new(8, DegRevLex).unwrap())
 }
 
-fn random_poly(ring: &Ring<Fr>, rng: &mut Lcg, nterms: usize, max_exp: u32) -> Poly<Fr> {
+fn random_poly(ring: &Ring<Fr, DegRevLex>, rng: &mut Lcg, nterms: usize, max_exp: u32) -> Poly<Fr> {
     let n = ring.nvars() as usize;
     let mut pairs = Vec::with_capacity(nterms);
     for _ in 0..nterms {
@@ -63,7 +63,7 @@ fn random_poly(ring: &Ring<Fr>, rng: &mut Lcg, nterms: usize, max_exp: u32) -> P
     Poly::from_terms(ring, pairs)
 }
 
-fn random_mono(ring: &Ring<Fr>, rng: &mut Lcg, max_exp: u32) -> MonoTerm {
+fn random_mono(ring: &Ring<Fr, DegRevLex>, rng: &mut Lcg, max_exp: u32) -> MonoTerm {
     let n = ring.nvars() as usize;
     let mut exps = vec![0u32; n];
     for slot in exps.iter_mut() {

@@ -19,6 +19,7 @@
 //! sugar)` (which the G-M code can request when regenerating a pair
 //! whose earlier instance was deleted).
 
+use crate::ordering::MonoOrder;
 use std::cmp::Ordering;
 
 use crate::monomial::MonoTerm;
@@ -93,9 +94,9 @@ impl Pair {
     }
 
     /// Debug-only invariant check.
-    pub fn assert_canonical<F: ark_ff::Field + Copy + Send + Sync>(
+    pub fn assert_canonical<F: ark_ff::Field + Copy + Send + Sync, O: MonoOrder>(
         &self,
-        ring: &crate::ring::Ring<F>,
+        ring: &crate::ring::Ring<F, O>,
     ) {
         assert!(self.i < self.j, "pair indices not ordered");
         self.lcm.assert_canonical(ring);
@@ -130,17 +131,17 @@ impl Eq for Pair {}
 mod tests {
     use super::*;
     use crate::monomial::MonoTerm;
-    use crate::ordering::MonoOrder;
+    use crate::ordering::DegRevLex;
     use crate::ring::Ring;
     use ark_bls12_381::Fr;
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
 
-    fn mk_ring(nvars: u32) -> Ring<Fr> {
-        Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap()
+    fn mk_ring(nvars: u32) -> Ring<Fr, DegRevLex> {
+        Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap()
     }
 
-    fn lcm_mono(r: &Ring<Fr>, exps: &[u32]) -> MonoTerm {
+    fn lcm_mono(r: &Ring<Fr, DegRevLex>, exps: &[u32]) -> MonoTerm {
         MonoTerm::from_exponents(r, exps).unwrap()
     }
 

@@ -36,5 +36,7 @@ pub(super) unsafe fn dealloc<F: Field + Copy>(ptr: NonNull<Node<F>>) {
     // Safety-checked by contract above: reclaim the `Box` and drop
     // it. The implicit drop walks only this one node because the
     // caller has already cleared `next`.
-    unsafe { drop(Box::from_raw(ptr.as_ptr())); }
+    unsafe {
+        drop(Box::from_raw(ptr.as_ptr()));
+    }
 }

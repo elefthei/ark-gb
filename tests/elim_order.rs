@@ -1,4 +1,4 @@
-//! Tests for `MonoOrder::Elim` (block elimination order).
+//! Tests for `Elim` (block elimination order).
 //!
 //! The block weight order with `split = k` is designed so that a
 //! Gröbner basis under that order, intersected with the variables
@@ -17,11 +17,11 @@ use ark_bls12_381::Fr;
 use ark_ff::One;
 use ark_gb::compute_gb;
 use ark_gb::monomial::MonoTerm;
-use ark_gb::ordering::MonoOrder;
+use ark_gb::ordering::{DegRevLex, Elim, MonoOrder};
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 
-fn mono(ring: &Ring<Fr>, exps: &[u32]) -> MonoTerm {
+fn mono<O: MonoOrder>(ring: &Ring<Fr, O>, exps: &[u32]) -> MonoTerm {
     MonoTerm::from_exponents(ring, exps).unwrap()
 }
 
@@ -29,7 +29,7 @@ fn mono(ring: &Ring<Fr>, exps: &[u32]) -> MonoTerm {
 fn elim_xy_minus_1_x_plus_y() {
     // Ring: Fr[x, y] with x = var 0 (the eliminated variable) and
     // y = var 1.
-    let ring = Arc::new(Ring::<Fr>::new(2, MonoOrder::Elim { split: 1 }).unwrap());
+    let ring = Arc::new(Ring::<Fr, Elim>::new(2, Elim { split: 1 }).unwrap());
 
     // f1 = x*y - 1
     let f1 = Poly::from_terms(
@@ -55,7 +55,10 @@ fn elim_xy_minus_1_x_plus_y() {
     // generator whose every term has `x`-exponent 0.
     let mut found_pure_y = false;
     for (i, p) in gb.iter().enumerate() {
-        let exps = p.iter().map(|(_, m)| m.exponents(&ring)).collect::<Vec<_>>();
+        let exps = p
+            .iter()
+            .map(|(_, m)| m.exponents(&ring))
+            .collect::<Vec<_>>();
         let pure_y = !exps.is_empty() && exps.iter().all(|e| e[0] == 0);
         if pure_y {
             found_pure_y = true;
@@ -86,11 +89,11 @@ fn elim_with_split_zero_matches_degrevlex() {
     // Sanity: Elim { split: 0 } is degrevlex on the full block, so
     // the resulting GB should be identical (up to permutation /
     // normalisation) to the DegRevLex GB on the same input.
-    let ring_e = Arc::new(Ring::<Fr>::new(2, MonoOrder::Elim { split: 0 }).unwrap());
-    let ring_d = Arc::new(Ring::<Fr>::new(2, MonoOrder::DegRevLex).unwrap());
+    let ring_e = Arc::new(Ring::<Fr, Elim>::new(2, Elim { split: 0 }).unwrap());
+    let ring_d = Arc::new(Ring::<Fr, DegRevLex>::new(2, DegRevLex).unwrap());
 
     // Input: a single non-trivial pair.
-    let make_input = |r: &Ring<Fr>| {
+    fn make_input<O: MonoOrder>(r: &Ring<Fr, O>) -> Vec<Poly<Fr>> {
         vec![
             Poly::from_terms(
                 r,
@@ -107,7 +110,7 @@ fn elim_with_split_zero_matches_degrevlex() {
                 ],
             ),
         ]
-    };
+    }
     let gb_e = compute_gb(ring_e.clone(), make_input(&ring_e));
     let gb_d = compute_gb(ring_d.clone(), make_input(&ring_d));
     assert_eq!(
@@ -119,7 +122,7 @@ fn elim_with_split_zero_matches_degrevlex() {
 
 #[test]
 fn elim_constructor_rejects_oversized_split() {
-    assert!(Ring::<Fr>::new(3, MonoOrder::Elim { split: 4 }).is_none());
-    assert!(Ring::<Fr>::new(3, MonoOrder::Elim { split: 3 }).is_some());
-    assert!(Ring::<Fr>::new(3, MonoOrder::Elim { split: 0 }).is_some());
+    assert!(Ring::<Fr, Elim>::new(3, Elim { split: 4 }).is_none());
+    assert!(Ring::<Fr, Elim>::new(3, Elim { split: 3 }).is_some());
+    assert!(Ring::<Fr, Elim>::new(3, Elim { split: 0 }).is_some());
 }

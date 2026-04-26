@@ -14,12 +14,12 @@ use std::time::Instant;
 use ark_bls12_381::Fr;
 use ark_ff::One;
 use ark_gb::gm;
-use ark_gb::{LSet, MonoOrder, MonoTerm, Pair, Poly, Ring, SBasis};
+use ark_gb::{DegRevLex, LSet, MonoTerm, Pair, Poly, Ring, SBasis};
 
 const NVARS: u32 = 6;
 
-fn mk_ring() -> Ring<Fr> {
-    Ring::<Fr>::new(NVARS, MonoOrder::DegRevLex).unwrap()
+fn mk_ring() -> Ring<Fr, DegRevLex> {
+    Ring::<Fr, DegRevLex>::new(NVARS, DegRevLex).unwrap()
 }
 
 /// A simple LCG so the example stays dependency-free.
@@ -37,7 +37,7 @@ impl Lcg {
     }
 }
 
-fn random_lm(r: &Ring<Fr>, rng: &mut Lcg) -> MonoTerm {
+fn random_lm(r: &Ring<Fr, DegRevLex>, rng: &mut Lcg) -> MonoTerm {
     let n = r.nvars() as usize;
     let mut exps = vec![0u32; n];
     // Sparse: 2 variables with small exponents.
@@ -100,13 +100,7 @@ fn bench_lset_pop_reinsert() {
         let p = l.pop().unwrap();
         sugar_cursor = sugar_cursor.wrapping_add(1) & 0xff;
         arrival_cursor += 1;
-        l.insert(Pair::new(
-            p.i,
-            p.j,
-            lcm,
-            sugar_cursor,
-            arrival_cursor,
-        ));
+        l.insert(Pair::new(p.i, p.j, lcm, sugar_cursor, arrival_cursor));
     }
     let dt = t0.elapsed();
     println!(

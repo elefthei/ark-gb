@@ -39,15 +39,14 @@ use ark_ff::Field as ArkField;
 use ark_gb::bba::compute_gb_serial;
 use ark_gb::compute_gb;
 use ark_gb::monomial::MonoTerm;
+use ark_gb::ordering::MonoOrder;
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 use ark_gb::validate::is_groebner_basis;
 
 #[path = "../benches/groebner_shared.rs"]
 mod shared;
-use shared::{
-    cyclic_polys, elim_ring, grevlex_ring, katsura_polys, one_poly, var_poly,
-};
+use shared::{cyclic_polys, elim_ring, grevlex_ring, katsura_polys, one_poly, var_poly};
 
 // ---------------------------------------------------------------------------
 // Helpers.
@@ -72,7 +71,7 @@ fn deterministic_shuffle<X: Clone>(xs: &[X], seed: u64) -> Vec<X> {
     out
 }
 
-fn assert_proper(label: &str, gb: &[Poly<Fr>], ring: &Ring<Fr>) {
+fn assert_proper<O: MonoOrder + 'static>(label: &str, gb: &[Poly<Fr>], ring: &Ring<Fr, O>) {
     assert!(!gb.is_empty(), "[{label}] empty reduced GB");
     let nvars = ring.nvars() as usize;
     let zero_exps = vec![0u32; nvars];
@@ -90,7 +89,10 @@ fn assert_proper(label: &str, gb: &[Poly<Fr>], ring: &Ring<Fr>) {
 /// Count standard monomials of `gb` (= `dim_F(R/I)` when `I` is 0-dim).
 /// Returns `None` if any variable lacks a pure-power leading monomial
 /// in `gb`, meaning the ideal is positive-dimensional.
-fn standard_monomial_count(ring: &Ring<Fr>, gb: &[Poly<Fr>]) -> Option<usize> {
+fn standard_monomial_count<O: MonoOrder + 'static>(
+    ring: &Ring<Fr, O>,
+    gb: &[Poly<Fr>],
+) -> Option<usize> {
     let nvars = ring.nvars() as usize;
     let lm_exps: Vec<Vec<u32>> = gb
         .iter()
@@ -144,7 +146,12 @@ fn standard_monomial_count(ring: &Ring<Fr>, gb: &[Poly<Fr>]) -> Option<usize> {
 }
 
 /// Ideal inclusion + S-pair closure (Layers 1a+1b) via Buchberger's iff.
-fn assert_is_gb(label: &str, ring: &Arc<Ring<Fr>>, input: &[Poly<Fr>], gb: &[Poly<Fr>]) {
+fn assert_is_gb<O: MonoOrder + 'static>(
+    label: &str,
+    ring: &Arc<Ring<Fr, O>>,
+    input: &[Poly<Fr>],
+    gb: &[Poly<Fr>],
+) {
     if let Err(err) = is_groebner_basis(ring, input, gb) {
         panic!("[{label}] compute_gb output failed Buchberger's criterion: {err:?}");
     }
@@ -154,9 +161,9 @@ fn assert_is_gb(label: &str, ring: &Arc<Ring<Fr>>, input: &[Poly<Fr>], gb: &[Pol
 // Self-checks parametrized over (family, n, order).
 // ---------------------------------------------------------------------------
 
-fn run_self_checks(
+fn run_self_checks<O: MonoOrder + 'static>(
     label: &str,
-    ring: &Arc<Ring<Fr>>,
+    ring: &Arc<Ring<Fr, O>>,
     input: &[Poly<Fr>],
     expected_dim: Option<usize>,
 ) -> Vec<Poly<Fr>> {
@@ -169,10 +176,7 @@ fn run_self_checks(
     // Layer 2e — input-shuffle invariance.
     let shuffled = deterministic_shuffle(input, 0x00C0_FFEE_u64);
     let gb_shuf = compute_gb_serial(Arc::clone(ring), shuffled);
-    assert_eq!(
-        gb, gb_shuf,
-        "[{label}] reduced GB depends on input order"
-    );
+    assert_eq!(gb, gb_shuf, "[{label}] reduced GB depends on input order");
 
     // Layer 2f — standard-monomial count.
     let dim = standard_monomial_count(ring, &gb);
@@ -216,7 +220,11 @@ fn katsura_3_dim_order_invariant() {
         d_g, d_e,
         "katsura/3 standard-monomial count differs between grevlex and elim (got {d_g:?} vs {d_e:?})"
     );
-    assert_eq!(d_g, Some(1 << 2), "katsura/3 should be 0-dim with 4 std mons");
+    assert_eq!(
+        d_g,
+        Some(1 << 2),
+        "katsura/3 should be 0-dim with 4 std mons"
+    );
 }
 
 #[test]
@@ -273,14 +281,17 @@ fn fr_from_rational(num: i64, den: u64) -> Fr {
     n * d.inverse().expect("denominator must be non-zero")
 }
 
-fn poly_from_lit(ring: &Ring<Fr>, lit: PolyLit<'_>) -> Poly<Fr> {
+fn poly_from_lit<O: MonoOrder + 'static>(ring: &Ring<Fr, O>, lit: PolyLit<'_>) -> Poly<Fr> {
     let mut out = Poly::<Fr>::zero();
     for &(num, den, mono) in lit {
         let c = fr_from_rational(num, den);
         // Build c * prod(var_poly(vi)^pow).
         let mut term = Poly::from_terms(
             ring,
-            vec![(c, MonoTerm::from_exponents(ring, &vec![0u32; ring.nvars() as usize]).unwrap())],
+            vec![(
+                c,
+                MonoTerm::from_exponents(ring, &vec![0u32; ring.nvars() as usize]).unwrap(),
+            )],
         );
         for &(vi, pow) in mono {
             for _ in 0..pow {
@@ -293,16 +304,16 @@ fn poly_from_lit(ring: &Ring<Fr>, lit: PolyLit<'_>) -> Poly<Fr> {
     out
 }
 
-fn pinned_basis(ring: &Ring<Fr>, lits: BasisLit<'_>) -> Vec<Poly<Fr>> {
+fn pinned_basis<O: MonoOrder + 'static>(ring: &Ring<Fr, O>, lits: BasisLit<'_>) -> Vec<Poly<Fr>> {
     lits.iter().map(|p| poly_from_lit(ring, p)).collect()
 }
 
 /// On a true GB, `compute_gb_serial` is idempotent up to monicization
 /// and sort. We canonicalize the pinned reference by re-running it
 /// through the pipeline, then byte-compare with our own GB.
-fn assert_matches_pin(
+fn assert_matches_pin<O: MonoOrder + 'static>(
     label: &str,
-    ring: &Arc<Ring<Fr>>,
+    ring: &Arc<Ring<Fr, O>>,
     our_gb: &[Poly<Fr>],
     pinned: Vec<Poly<Fr>>,
 ) {
@@ -315,7 +326,8 @@ fn assert_matches_pin(
         pinned_canon.len()
     );
     assert_eq!(
-        our_gb, &pinned_canon[..],
+        our_gb,
+        &pinned_canon[..],
         "[{label}] reduced GB doesn't match sympy reference"
     );
 }

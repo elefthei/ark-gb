@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use ark_bls12_381::Fr;
 use ark_gb::bba::compute_gb_serial;
+use ark_gb::ordering::MonoOrder;
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 use ark_gb::validate::is_groebner_basis;
@@ -33,8 +34,8 @@ use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_ma
 #[path = "groebner_shared.rs"]
 mod shared;
 use shared::{
-    CYCLIC_SIZES, KATSURA_ELIM_SIZES, KATSURA_GREVLEX_SIZES, cyclic_polys, elim_ring,
-    grevlex_ring, katsura_polys,
+    CYCLIC_SIZES, KATSURA_ELIM_SIZES, KATSURA_GREVLEX_SIZES, cyclic_polys, elim_ring, grevlex_ring,
+    katsura_polys,
 };
 
 // ---------------------------------------------------------------------------
@@ -51,15 +52,15 @@ const MEASUREMENT_TIME: Duration = Duration::from_secs(30);
 /// Time `compute_gb_serial` (the deterministic serial path) on each `n`
 /// in `sizes`. We use `iter_batched` so the per-iter input clone is
 /// excluded from the measurement.
-fn bench_compute_gb<RB, IB>(
+fn bench_compute_gb<O: MonoOrder + 'static, RB, IB>(
     c: &mut Criterion,
     group_name: &str,
     sizes: &[usize],
     ring_builder: RB,
     input_builder: IB,
 ) where
-    RB: Fn(usize) -> Arc<Ring<Fr>>,
-    IB: Fn(&Ring<Fr>) -> Vec<Poly<Fr>>,
+    RB: Fn(usize) -> Arc<Ring<Fr, O>>,
+    IB: Fn(&Ring<Fr, O>) -> Vec<Poly<Fr>>,
 {
     let mut group = c.benchmark_group(group_name);
     group.sample_size(SAMPLE_SIZE);
@@ -86,15 +87,15 @@ fn bench_compute_gb<RB, IB>(
 /// Pre-computes the reduced GB once outside the iter loop; each iter
 /// reduces every input generator + every S-poly modulo that basis
 /// (Buchberger's iff check).
-fn bench_validation<RB, IB>(
+fn bench_validation<O: MonoOrder + 'static, RB, IB>(
     c: &mut Criterion,
     group_name: &str,
     sizes: &[usize],
     ring_builder: RB,
     input_builder: IB,
 ) where
-    RB: Fn(usize) -> Arc<Ring<Fr>>,
-    IB: Fn(&Ring<Fr>) -> Vec<Poly<Fr>>,
+    RB: Fn(usize) -> Arc<Ring<Fr, O>>,
+    IB: Fn(&Ring<Fr, O>) -> Vec<Poly<Fr>>,
 {
     let mut group = c.benchmark_group(group_name);
     group.sample_size(SAMPLE_SIZE);

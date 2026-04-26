@@ -14,11 +14,11 @@ use ark_bls12_381::Fr;
 use ark_ff::One;
 use ark_gb::compute_gb;
 use ark_gb::monomial::MonoTerm;
-use ark_gb::ordering::MonoOrder;
+use ark_gb::ordering::DegRevLex;
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 
-fn mono(ring: &Ring<Fr>, exps: &[u32]) -> MonoTerm {
+fn mono(ring: &Ring<Fr, DegRevLex>, exps: &[u32]) -> MonoTerm {
     MonoTerm::from_exponents(ring, exps).unwrap()
 }
 
@@ -27,7 +27,7 @@ fn mono(ring: &Ring<Fr>, exps: &[u32]) -> MonoTerm {
 /// the constant `1`, after which everything reduces to zero.
 #[test]
 fn coprime_linears_collapse_to_unit_ideal() {
-    let ring = Arc::new(Ring::<Fr>::new(1, MonoOrder::DegRevLex).unwrap());
+    let ring = Arc::new(Ring::<Fr, DegRevLex>::new(1, DegRevLex).unwrap());
     let f1 = Poly::from_terms(
         &ring,
         vec![
@@ -49,7 +49,11 @@ fn coprime_linears_collapse_to_unit_ideal() {
     // term, monomial all-zero exponents. After the auto-monic step
     // it must equal `1`.
     let terms: Vec<_> = g.iter().collect();
-    assert_eq!(terms.len(), 1, "constant ideal generator must be a single term");
+    assert_eq!(
+        terms.len(),
+        1,
+        "constant ideal generator must be a single term"
+    );
     let (c, m) = terms[0];
     assert_eq!(m.exponents(&ring), vec![0]);
     assert_eq!(c, Fr::one());
@@ -60,7 +64,7 @@ fn coprime_linears_collapse_to_unit_ideal() {
 /// generators (after auto-reduction + monic) are `x` and `y`.
 #[test]
 fn linear_two_var_gb_is_x_y() {
-    let ring = Arc::new(Ring::<Fr>::new(2, MonoOrder::DegRevLex).unwrap());
+    let ring = Arc::new(Ring::<Fr, DegRevLex>::new(2, DegRevLex).unwrap());
     let f1 = Poly::from_terms(
         &ring,
         vec![
@@ -101,7 +105,7 @@ fn linear_two_var_gb_is_x_y() {
 /// itself: a single generator forms its own (already reduced) GB.
 #[test]
 fn singleton_xy_minus_1_is_self_gb() {
-    let ring = Arc::new(Ring::<Fr>::new(2, MonoOrder::DegRevLex).unwrap());
+    let ring = Arc::new(Ring::<Fr, DegRevLex>::new(2, DegRevLex).unwrap());
     let f = Poly::from_terms(
         &ring,
         vec![

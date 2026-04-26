@@ -8,14 +8,14 @@
 //! Run with `cargo run --release --example sanity`.
 
 use ark_bls12_381::Fr;
-use ark_gb::{MonoOrder, MonoTerm, Poly, Ring};
+use ark_gb::{DegRevLex, MonoTerm, Poly, Ring};
 use std::time::Instant;
 
-fn build_ring() -> Ring<Fr> {
-    Ring::<Fr>::new(10, MonoOrder::DegRevLex).unwrap()
+fn build_ring() -> Ring<Fr, DegRevLex> {
+    Ring::<Fr, DegRevLex>::new(10, DegRevLex).unwrap()
 }
 
-fn random_poly(ring: &Ring<Fr>, nterms: usize, seed: u64) -> Poly<Fr> {
+fn random_poly(ring: &Ring<Fr, DegRevLex>, nterms: usize, seed: u64) -> Poly<Fr> {
     let n = ring.nvars() as usize;
     let mut s = seed;
     let mut next = || {

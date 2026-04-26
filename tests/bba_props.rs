@@ -7,7 +7,7 @@ use ark_ff::{Field, One, PrimeField, Zero};
 use ark_gb::compute_gb;
 use ark_gb::compute_gb_parallel;
 use ark_gb::monomial::MonoTerm;
-use ark_gb::ordering::MonoOrder;
+use ark_gb::ordering::DegRevLex;
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 
@@ -39,17 +39,22 @@ impl Prng {
     }
 }
 
-fn mk_ring(nvars: u32) -> Arc<Ring<Fr>> {
-    Arc::new(Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap())
+fn mk_ring(nvars: u32) -> Arc<Ring<Fr, DegRevLex>> {
+    Arc::new(Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap())
 }
 
-fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+fn mono(r: &Ring<Fr, DegRevLex>, e: &[u32]) -> MonoTerm {
     MonoTerm::from_exponents(r, e).unwrap()
 }
 
 /// Generate a random polynomial in `r` with at most `max_terms`
 /// monomials of per-variable exponent at most `max_exp`.
-fn random_poly(rng: &mut Prng, ring: &Ring<Fr>, max_terms: u32, max_exp: u32) -> Poly<Fr> {
+fn random_poly(
+    rng: &mut Prng,
+    ring: &Ring<Fr, DegRevLex>,
+    max_terms: u32,
+    max_exp: u32,
+) -> Poly<Fr> {
     let n = ring.nvars() as usize;
     let t = rng.in_range(1, max_terms);
     let mut terms = Vec::with_capacity(t as usize);
@@ -66,7 +71,7 @@ fn random_poly(rng: &mut Prng, ring: &Ring<Fr>, max_terms: u32, max_exp: u32) ->
 
 /// Reduce `p` to normal form against `gb` (assumed to be a GB of
 /// some ideal I). Returns the normal form.
-fn normal_form(p: &Poly<Fr>, gb: &[Poly<Fr>], ring: &Ring<Fr>) -> Poly<Fr> {
+fn normal_form(p: &Poly<Fr>, gb: &[Poly<Fr>], ring: &Ring<Fr, DegRevLex>) -> Poly<Fr> {
     let mut cur = p.clone();
     'outer: loop {
         if cur.is_zero() {
@@ -252,7 +257,11 @@ fn parallel_matches_serial_small_ideals() {
             .collect();
         let gb_serial = compute_gb(Arc::clone(&r), gens.clone());
         let gb_par = compute_gb_parallel(Arc::clone(&r), gens.clone(), 4).unwrap();
-        assert_eq!(gb_serial, gb_par, "iter {}: serial vs parallel mismatch", iter);
+        assert_eq!(
+            gb_serial, gb_par,
+            "iter {}: serial vs parallel mismatch",
+            iter
+        );
     }
 }
 
@@ -281,8 +290,7 @@ fn parallel_idempotence_t4() {
             .map(|_| random_poly(&mut rng, &r, 3, 2))
             .collect();
         let gb_once = compute_gb_parallel(Arc::clone(&r), gens, 4).unwrap();
-        let gb_twice =
-            compute_gb_parallel(Arc::clone(&r), gb_once.clone(), 4).unwrap();
+        let gb_twice = compute_gb_parallel(Arc::clone(&r), gb_once.clone(), 4).unwrap();
         assert_eq!(gb_once, gb_twice, "parallel idempotence violated at T=4");
     }
 }

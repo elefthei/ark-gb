@@ -73,15 +73,47 @@
 //! Algorithms re-derived, not copied. See ADR-005 for the
 //! Singular/FLINT comparison and the rationale for the 7+1 layout.
 
-use crate::ordering::MonoOrder;
 use crate::field::Field;
-use crate::ring::{BITS_PER_VAR, Ring};
+use crate::ordering::MonoOrder;
+use crate::ring::{BITS_PER_VAR, Ring, RingData};
 use std::cmp::Ordering;
+use std::hash::Hash;
 
 /// Number of u64 words in the packed exponent block.
 pub const WORDS_PER_MONO: usize = 4;
 
 const _BITS_PER_VAR_IS_8: () = assert!(BITS_PER_VAR == 8);
+
+/// Data-operations trait for monomials.
+///
+/// The methods here are order-independent (they operate on exponent
+/// vectors); ordering-dependent comparison lives in
+/// [`crate::ordering::MonoOrder::cmp`] which dispatches back through
+/// `cmp_degrevlex` / `cmp_elim`.
+pub trait Monomial<F: Field + Copy + Send + Sync>:
+    Sized + Copy + Send + Sync + std::fmt::Debug + PartialEq + Eq + Hash
+{
+    /// The identity monomial (all exponents zero).
+    fn one(ring: &RingData<F>) -> Self;
+    /// Build a monomial from an exponent slice of length `ring.nvars()`.
+    fn from_exponents(ring: &RingData<F>, exps: &[u32]) -> Option<Self>;
+    /// Exponent of variable `i`. Returns `None` if `i >= ring.nvars()`.
+    fn exponent(&self, ring: &RingData<F>, i: u32) -> Option<u32>;
+    /// Copy the exponent vector into a `Vec<u32>`.
+    fn exponents(&self, ring: &RingData<F>) -> Vec<u32>;
+    /// Multiply two monomials.
+    fn mul(&self, other: &Self, ring: &RingData<F>) -> Self;
+    /// `true` iff `self | other` (each `e_i(self) ≤ e_i(other)`).
+    fn divides(&self, other: &Self, ring: &RingData<F>) -> bool;
+    /// Divide. Precondition `other.divides(self)`; returns `None` otherwise.
+    fn div(&self, other: &Self, ring: &RingData<F>) -> Option<Self>;
+    /// Componentwise maximum (least common multiple of monomials).
+    fn lcm(&self, other: &Self, ring: &RingData<F>) -> Self;
+    /// Degrevlex comparison.
+    fn cmp_degrevlex(&self, other: &Self, ring: &RingData<F>) -> Ordering;
+    /// Block elimination comparison.
+    fn cmp_elim(&self, other: &Self, ring: &RingData<F>, split: usize) -> Ordering;
+}
 
 /// Packed-exponent monomial. See module documentation for layout.
 ///
@@ -111,7 +143,10 @@ impl MonoTerm {
     /// Returns `None` if the length is wrong, any exponent exceeds
     /// [`crate::ring::MAX_VAR_EXP`] (= 127, the 7-bit per-variable
     /// limit), or the total degree exceeds `u32::MAX`.
-    pub fn from_exponents<F: Field + Copy + Send + Sync>(ring: &Ring<F>, exps: &[u32]) -> Option<Self> {
+    pub fn from_exponents<F: Field + Copy + Send + Sync>(
+        ring: &RingData<F>,
+        exps: &[u32],
+    ) -> Option<Self> {
         let n = ring.nvars() as usize;
         if exps.len() != n {
             return None;
@@ -157,7 +192,7 @@ impl MonoTerm {
     }
 
     /// The identity monomial (all exponents zero).
-    pub fn one<F: Field + Copy + Send + Sync>(ring: &Ring<F>) -> Self {
+    pub fn one<F: Field + Copy + Send + Sync>(ring: &RingData<F>) -> Self {
         let zeros = vec![0u32; ring.nvars() as usize];
         Self::from_exponents(ring, &zeros).expect("identity monomial fits trivially")
     }
@@ -195,7 +230,11 @@ impl MonoTerm {
     }
 
     /// Exponent of variable `i`. Returns `None` if `i >= ring.nvars()`.
-    pub fn exponent<F: Field + Copy + Send + Sync>(&self, ring: &Ring<F>, i: u32) -> Option<u32> {
+    pub fn exponent<F: Field + Copy + Send + Sync>(
+        &self,
+        ring: &RingData<F>,
+        i: u32,
+    ) -> Option<u32> {
         if i >= ring.nvars() {
             return None;
         }
@@ -212,7 +251,7 @@ impl MonoTerm {
     }
 
     /// Copy the exponent vector into a `Vec<u32>`.
-    pub fn exponents<F: Field + Copy + Send + Sync>(&self, ring: &Ring<F>) -> Vec<u32> {
+    pub fn exponents<F: Field + Copy + Send + Sync>(&self, ring: &RingData<F>) -> Vec<u32> {
         let n = ring.nvars() as usize;
         (0..n).map(|i| self.exponent_raw(n, i)).collect()
     }
@@ -242,7 +281,7 @@ impl MonoTerm {
     /// adds into one `vpaddq ymm`). The top byte (total-degree cap)
     /// is rewritten cleanly from the cached u32 total rather than
     /// relying on the wrap-add result.
-    pub fn mul<F: Field + Copy + Send + Sync>(&self, other: &Self, ring: &Ring<F>) -> Self {
+    pub fn mul<F: Field + Copy + Send + Sync>(&self, other: &Self, ring: &RingData<F>) -> Self {
         // The explicit unroll below assumes exactly four words; if
         // WORDS_PER_MONO ever changes, update the literal.
         const _: () = assert!(WORDS_PER_MONO == 4);
@@ -267,10 +306,8 @@ impl MonoTerm {
         // not trigger a false positive here.
         if cfg!(debug_assertions) {
             let m = ring.overflow_mask();
-            let ovf = (packed[0] & m[0])
-                | (packed[1] & m[1])
-                | (packed[2] & m[2])
-                | (packed[3] & m[3]);
+            let ovf =
+                (packed[0] & m[0]) | (packed[1] & m[1]) | (packed[2] & m[2]) | (packed[3] & m[3]);
             debug_assert_eq!(
                 ovf, 0,
                 "MonoTerm::mul overflow: per-byte exponent > 127 (ADR-018 contract: \
@@ -308,7 +345,7 @@ impl MonoTerm {
     /// With direct exponent storage (ADR-005), this is a per-byte
     /// `≤` test. Implemented byte-by-byte over the variable bytes;
     /// could be SIMD'd later if it shows up in a profile.
-    pub fn divides<F: Field + Copy + Send + Sync>(&self, other: &Self, ring: &Ring<F>) -> bool {
+    pub fn divides<F: Field + Copy + Send + Sync>(&self, other: &Self, ring: &RingData<F>) -> bool {
         let n = ring.nvars() as usize;
         let first_var_byte = (WORDS_PER_MONO * 8 - 1) - n; // = 31 - n
         let last_var_byte = WORDS_PER_MONO * 8 - 2; // 30
@@ -331,7 +368,11 @@ impl MonoTerm {
     /// With direct storage, the per-byte op is `e_new = e_self - e_other`,
     /// rejecting when `e_other > e_self`. Per-byte loop maintained for
     /// the same reason as `divides`.
-    pub fn div<F: Field + Copy + Send + Sync>(&self, other: &Self, ring: &Ring<F>) -> Option<Self> {
+    pub fn div<F: Field + Copy + Send + Sync>(
+        &self,
+        other: &Self,
+        ring: &RingData<F>,
+    ) -> Option<Self> {
         let n = ring.nvars() as usize;
         let first_var_byte = (WORDS_PER_MONO * 8 - 1) - n;
         let last_var_byte = WORDS_PER_MONO * 8 - 2;
@@ -369,7 +410,7 @@ impl MonoTerm {
     }
 
     /// Componentwise maximum (least common multiple of monomials).
-    pub fn lcm<F: Field + Copy + Send + Sync>(&self, other: &Self, ring: &Ring<F>) -> Self {
+    pub fn lcm<F: Field + Copy + Send + Sync>(&self, other: &Self, ring: &RingData<F>) -> Self {
         let n = ring.nvars() as usize;
         let mut exps = vec![0u32; n];
         for (i, slot) in exps.iter_mut().enumerate() {
@@ -382,11 +423,12 @@ impl MonoTerm {
     // ----- Ordering -----
 
     /// Compare under the ring's ordering.
-    pub fn cmp<F: Field + Copy + Send + Sync>(&self, other: &Self, ring: &Ring<F>) -> Ordering {
-        match ring.ordering() {
-            MonoOrder::DegRevLex => self.cmp_degrevlex(other, ring),
-            MonoOrder::Elim { split } => self.cmp_elim(other, ring, split as usize),
-        }
+    pub fn cmp<F: Field + Copy + Send + Sync, O: MonoOrder>(
+        &self,
+        other: &Self,
+        ring: &Ring<F, O>,
+    ) -> Ordering {
+        ring.cmp(self, other)
     }
 
     /// Block elimination order: compare block-weight on variables
@@ -398,10 +440,10 @@ impl MonoTerm {
     /// scan, so `Elim` is slower than `DegRevLex` on hot paths.
     /// Acceptable for the elimination use case where the user
     /// has already opted out of the fast graded path.
-    fn cmp_elim<F: Field + Copy + Send + Sync>(
+    pub fn cmp_elim<F: Field + Copy + Send + Sync>(
         &self,
         other: &Self,
-        ring: &Ring<F>,
+        ring: &RingData<F>,
         split: usize,
     ) -> Ordering {
         let n = ring.nvars() as usize;
@@ -440,7 +482,11 @@ impl MonoTerm {
     /// 255, the cap byte is uninformative; we fall back on the cached
     /// `total_deg: u32` first, then on the variable bytes through the
     /// same XOR-flipped compare.
-    fn cmp_degrevlex<F: Field + Copy + Send + Sync>(&self, other: &Self, ring: &Ring<F>) -> Ordering {
+    pub fn cmp_degrevlex<F: Field + Copy + Send + Sync>(
+        &self,
+        other: &Self,
+        ring: &RingData<F>,
+    ) -> Ordering {
         let a_cap = (self.packed[WORDS_PER_MONO - 1] >> 56) & 0xFF;
         let b_cap = (other.packed[WORDS_PER_MONO - 1] >> 56) & 0xFF;
         let saturated = a_cap == u8::MAX as u64 || b_cap == u8::MAX as u64;
@@ -486,7 +532,7 @@ impl MonoTerm {
 
     /// Panic if any internal invariant is violated. Intended for
     /// `debug_assert!` guards and for tests.
-    pub fn assert_canonical<F: Field + Copy + Send + Sync>(&self, ring: &Ring<F>) {
+    pub fn assert_canonical<F: Field + Copy + Send + Sync>(&self, ring: &RingData<F>) {
         let n = ring.nvars() as usize;
         let mut total: u64 = 0;
         let mut sev: u64 = 0;
@@ -546,6 +592,58 @@ impl PartialEq for MonoTerm {
 }
 impl Eq for MonoTerm {}
 
+impl Hash for MonoTerm {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.packed.hash(state);
+        self.component.hash(state);
+    }
+}
+
+// ----- Monomial<F> impl for MonoTerm -----
+
+impl<F: Field + Copy + Send + Sync> Monomial<F> for MonoTerm {
+    #[inline]
+    fn one(ring: &RingData<F>) -> Self {
+        MonoTerm::one(ring)
+    }
+    #[inline]
+    fn from_exponents(ring: &RingData<F>, exps: &[u32]) -> Option<Self> {
+        MonoTerm::from_exponents(ring, exps)
+    }
+    #[inline]
+    fn exponent(&self, ring: &RingData<F>, i: u32) -> Option<u32> {
+        MonoTerm::exponent(self, ring, i)
+    }
+    #[inline]
+    fn exponents(&self, ring: &RingData<F>) -> Vec<u32> {
+        MonoTerm::exponents(self, ring)
+    }
+    #[inline]
+    fn mul(&self, other: &Self, ring: &RingData<F>) -> Self {
+        MonoTerm::mul(self, other, ring)
+    }
+    #[inline]
+    fn divides(&self, other: &Self, ring: &RingData<F>) -> bool {
+        MonoTerm::divides(self, other, ring)
+    }
+    #[inline]
+    fn div(&self, other: &Self, ring: &RingData<F>) -> Option<Self> {
+        MonoTerm::div(self, other, ring)
+    }
+    #[inline]
+    fn lcm(&self, other: &Self, ring: &RingData<F>) -> Self {
+        MonoTerm::lcm(self, other, ring)
+    }
+    #[inline]
+    fn cmp_degrevlex(&self, other: &Self, ring: &RingData<F>) -> Ordering {
+        MonoTerm::cmp_degrevlex(self, other, ring)
+    }
+    #[inline]
+    fn cmp_elim(&self, other: &Self, ring: &RingData<F>, split: usize) -> Ordering {
+        MonoTerm::cmp_elim(self, other, ring, split)
+    }
+}
+
 // ----- packing helpers -----
 
 /// Byte index of variable `i` in the 32-byte packed block.
@@ -580,10 +678,11 @@ fn split_byte_index(byte_idx: usize) -> (usize, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ordering::DegRevLex;
     use ark_bls12_381::Fr;
 
-    fn mk_ring(nvars: u32) -> Ring<Fr> {
-        Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap()
+    fn mk_ring(nvars: u32) -> Ring<Fr, DegRevLex> {
+        Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap()
     }
 
     #[test]

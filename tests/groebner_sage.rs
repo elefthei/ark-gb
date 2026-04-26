@@ -5,6 +5,7 @@
 
 use ark_bls12_381::Fr;
 use ark_gb::monomial::MonoTerm;
+use ark_gb::ordering::MonoOrder;
 use ark_gb::poly::Poly;
 use ark_gb::ring::Ring;
 
@@ -13,7 +14,10 @@ mod shared;
 use shared::{cyclic_polys, grevlex_ring, katsura_polys, var_poly};
 
 /// Build a polynomial from `(coeff, [(var_index, power), ...])` terms.
-fn grev_poly(ring: &Ring<Fr>, terms: &[(i64, &[(usize, usize)])]) -> Poly<Fr> {
+fn grev_poly<O: MonoOrder + 'static>(
+    ring: &Ring<Fr, O>,
+    terms: &[(i64, &[(usize, usize)])],
+) -> Poly<Fr> {
     let nvars = ring.nvars() as usize;
     let unit = MonoTerm::from_exponents(ring, &vec![0u32; nvars]).unwrap();
     let mut out = Poly::<Fr>::zero();

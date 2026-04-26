@@ -22,6 +22,7 @@
 
 use crate::field::Field;
 use crate::monomial::MonoTerm;
+use crate::ordering::MonoOrder;
 use crate::ring::Ring;
 
 /// A sparse polynomial in a [`Ring`].
@@ -95,7 +96,7 @@ impl<F: Field + Copy> Poly<F> {
 
     /// A polynomial with a single term `c * m`. Returns the zero
     /// polynomial if `c.is_zero()`.
-    pub fn monomial(_ring: &Ring<F>, c: F, m: MonoTerm) -> Self {
+    pub fn monomial<O: MonoOrder>(_ring: &Ring<F, O>, c: F, m: MonoTerm) -> Self {
         if c.is_zero() {
             return Self::zero();
         }
@@ -126,8 +127,8 @@ impl<F: Field + Copy> Poly<F> {
     /// * `terms` is strictly descending under the ring's ordering.
     /// * No monomial appears twice.
     /// * Every coefficient is nonzero.
-    pub fn from_descending_terms_unchecked(
-        ring: &Ring<F>,
+    pub fn from_descending_terms_unchecked<O: MonoOrder>(
+        ring: &Ring<F, O>,
         terms: Vec<(F, MonoTerm)>,
     ) -> Self {
         if terms.is_empty() {
@@ -167,8 +168,8 @@ impl<F: Field + Copy> Poly<F> {
     /// `kbucket::build_neg_cmp` loop where building parallel vectors
     /// is cheaper than pushing `(F, MonoTerm)` tuples one at a
     /// time into a single vec.
-    pub fn from_descending_parallel_unchecked(
-        ring: &Ring<F>,
+    pub fn from_descending_parallel_unchecked<O: MonoOrder>(
+        ring: &Ring<F, O>,
         coeffs: Vec<F>,
         terms: Vec<MonoTerm>,
     ) -> Self {
@@ -202,7 +203,7 @@ impl<F: Field + Copy> Poly<F> {
     /// pairs. Duplicates are summed, zeros are dropped, the result is
     /// sorted into descending order. Primarily for tests and round-trip
     /// from textual input.
-    pub fn from_terms(ring: &Ring<F>, terms: Vec<(F, MonoTerm)>) -> Self {
+    pub fn from_terms<O: MonoOrder>(ring: &Ring<F, O>, terms: Vec<(F, MonoTerm)>) -> Self {
         // Sort descending by monomial.
         let mut terms = terms;
         terms.sort_by(|a, b| b.1.cmp(&a.1, ring));
@@ -394,7 +395,7 @@ impl<F: Field + Copy> Poly<F> {
     // ----- Arithmetic -----
 
     /// In-place: `self = self + other`. Linear merge by monomial order.
-    pub fn add_assign(&mut self, other: &Poly<F>, ring: &Ring<F>) {
+    pub fn add_assign<O: MonoOrder>(&mut self, other: &Poly<F>, ring: &Ring<F, O>) {
         if other.is_zero() {
             return;
         }
@@ -408,7 +409,7 @@ impl<F: Field + Copy> Poly<F> {
     /// Out-of-place addition. `other` may alias self (Rust borrow rules
     /// prevent true aliasing at the type level, but we accept any two
     /// references including `&a, &a`).
-    pub fn add(&self, other: &Poly<F>, ring: &Ring<F>) -> Poly<F> {
+    pub fn add<O: MonoOrder>(&self, other: &Poly<F>, ring: &Ring<F, O>) -> Poly<F> {
         if other.is_zero() {
             return self.clone();
         }
@@ -426,12 +427,12 @@ impl<F: Field + Copy> Poly<F> {
     /// on the List backend (ADR-015) this variant splices input nodes
     /// directly into the output chain. See `p_Add_q` in
     /// `~/Singular/libpolys/polys/templates/p_Add_q__T.cc`.
-    pub fn add_consuming(self, other: Poly<F>, ring: &Ring<F>) -> Poly<F> {
+    pub fn add_consuming<O: MonoOrder>(self, other: Poly<F>, ring: &Ring<F, O>) -> Poly<F> {
         self.add(&other, ring)
     }
 
     /// Out-of-place subtraction.
-    pub fn sub(&self, other: &Poly<F>, ring: &Ring<F>) -> Poly<F> {
+    pub fn sub<O: MonoOrder>(&self, other: &Poly<F>, ring: &Ring<F, O>) -> Poly<F> {
         if other.is_zero() {
             return self.clone();
         }
@@ -442,7 +443,7 @@ impl<F: Field + Copy> Poly<F> {
     }
 
     /// Negation (flip every coefficient).
-    pub fn neg(&self, _ring: &Ring<F>) -> Poly<F> {
+    pub fn neg<O: MonoOrder>(&self, _ring: &Ring<F, O>) -> Poly<F> {
         let coeffs: Vec<F> = self.coeffs[self.head..].iter().map(|&c| -c).collect();
         let mut out = Self {
             coeffs,
@@ -457,14 +458,11 @@ impl<F: Field + Copy> Poly<F> {
     }
 
     /// Multiply every coefficient by a scalar. Returns zero if `c.is_zero()`.
-    pub fn scale(&self, c: F, _ring: &Ring<F>) -> Poly<F> {
+    pub fn scale<O: MonoOrder>(&self, c: F, _ring: &Ring<F, O>) -> Poly<F> {
         if c.is_zero() || self.is_zero() {
             return Self::zero();
         }
-        let coeffs: Vec<F> = self.coeffs[self.head..]
-            .iter()
-            .map(|&ci| ci * c)
-            .collect();
+        let coeffs: Vec<F> = self.coeffs[self.head..].iter().map(|&ci| ci * c).collect();
         let mut out = Self {
             coeffs,
             terms: self.terms[self.head..].to_vec(),
@@ -480,7 +478,7 @@ impl<F: Field + Copy> Poly<F> {
     /// Multiply every monomial by `m` (no scalar scaling). Per ADR-018,
     /// the caller's ring construction must ensure no product overflows
     /// the 7-bit per-variable budget; release builds do not check.
-    pub fn shift(&self, m: &MonoTerm, ring: &Ring<F>) -> Poly<F> {
+    pub fn shift<O: MonoOrder>(&self, m: &MonoTerm, ring: &Ring<F, O>) -> Poly<F> {
         if self.is_zero() {
             return Self::zero();
         }
@@ -506,7 +504,7 @@ impl<F: Field + Copy> Poly<F> {
     /// merge-based accumulator; fine for tests. A heap-based Johnson
     /// multiplication is future work. Per ADR-018, the caller must
     /// ensure no product overflows.
-    pub fn mul(&self, other: &Poly<F>, ring: &Ring<F>) -> Poly<F> {
+    pub fn mul<O: MonoOrder>(&self, other: &Poly<F>, ring: &Ring<F, O>) -> Poly<F> {
         if self.is_zero() || other.is_zero() {
             return Self::zero();
         }
@@ -533,7 +531,13 @@ impl<F: Field + Copy> Poly<F> {
     ///
     /// Per ADR-018, the caller's ring construction must ensure every
     /// `m * q[i]` product stays in-range; release builds do not check.
-    pub fn sub_mul_term(&self, c: F, m: &MonoTerm, q: &Poly<F>, ring: &Ring<F>) -> Poly<F> {
+    pub fn sub_mul_term<O: MonoOrder>(
+        &self,
+        c: F,
+        m: &MonoTerm,
+        q: &Poly<F>,
+        ring: &Ring<F, O>,
+    ) -> Poly<F> {
         if c.is_zero() || q.is_zero() {
             return self.clone();
         }
@@ -615,12 +619,12 @@ impl<F: Field + Copy> Poly<F> {
     /// allocates new nodes only for the `m * q[i]` products it needs
     /// to emit. See `p_Minus_mm_Mult_qq` in
     /// `~/Singular/libpolys/polys/templates/p_Minus_mm_Mult_qq__T.cc`.
-    pub fn sub_mm_mult_qq_consuming(
+    pub fn sub_mm_mult_qq_consuming<O: MonoOrder>(
         self,
         c: F,
         m: &MonoTerm,
         q: &Poly<F>,
-        ring: &Ring<F>,
+        ring: &Ring<F, O>,
     ) -> Poly<F> {
         self.sub_mul_term(c, m, q, ring)
     }
@@ -628,7 +632,7 @@ impl<F: Field + Copy> Poly<F> {
     /// Return a scalar multiple that makes the leading coefficient 1.
     /// Zero is returned unchanged. Requires a nonzero leading coefficient
     /// that's invertible (always true over a prime field for nonzero lc).
-    pub fn monic(&self, ring: &Ring<F>) -> Option<Poly<F>> {
+    pub fn monic<O: MonoOrder>(&self, ring: &Ring<F, O>) -> Option<Poly<F>> {
         if self.is_zero() {
             return Some(Self::zero());
         }
@@ -643,7 +647,7 @@ impl<F: Field + Copy> Poly<F> {
     // ----- Invariants -----
 
     /// Panic if any internal invariant is violated.
-    pub fn assert_canonical(&self, ring: &Ring<F>) {
+    pub fn assert_canonical<O: MonoOrder>(&self, ring: &Ring<F, O>) {
         assert_eq!(self.coeffs.len(), self.terms.len(), "length mismatch");
         assert!(
             self.head <= self.terms.len(),
@@ -751,7 +755,12 @@ impl<F: Field + Copy> Eq for Poly<F> {}
 /// unconditionally and the cursor is incremented only when the
 /// resulting coefficient is nonzero. This mirrors FLINT's
 /// `_nmod_mpoly_add` (`~/flint/src/nmod_mpoly/add.c:16-124`).
-fn merge<F: Field + Copy>(ring: &Ring<F>, a: &Poly<F>, b: &Poly<F>, subtract: bool) -> Poly<F> {
+fn merge<F: Field + Copy, O: MonoOrder>(
+    ring: &Ring<F, O>,
+    a: &Poly<F>,
+    b: &Poly<F>,
+    subtract: bool,
+) -> Poly<F> {
     let a_c = a.live_coeffs();
     let a_m = a.live_terms();
     let b_c = b.live_coeffs();
@@ -841,15 +850,15 @@ fn merge<F: Field + Copy>(ring: &Ring<F>, a: &Poly<F>, b: &Poly<F>, subtract: bo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ordering::DegRevLex;
     use ark_bls12_381::Fr;
     use ark_ff::{One, Zero};
-    use crate::ordering::MonoOrder;
 
-    fn mk_ring(nvars: u32) -> Ring<Fr> {
-        Ring::<Fr>::new(nvars, MonoOrder::DegRevLex).unwrap()
+    fn mk_ring(nvars: u32) -> Ring<Fr, DegRevLex> {
+        Ring::<Fr, DegRevLex>::new(nvars, DegRevLex).unwrap()
     }
 
-    fn mono(r: &Ring<Fr>, e: &[u32]) -> MonoTerm {
+    fn mono(r: &Ring<Fr, DegRevLex>, e: &[u32]) -> MonoTerm {
         MonoTerm::from_exponents(r, e).unwrap()
     }
 
@@ -870,7 +879,7 @@ mod tests {
             (Fr::from(3u64), mono(&r, &[1, 0, 0])),
             (Fr::from(5u64), mono(&r, &[0, 2, 0])),
             (Fr::from(7u64), mono(&r, &[1, 0, 0])), // duplicate: merges -> 3+7 = 10
-            (Fr::zero(), mono(&r, &[0, 0, 1])), // zero coeff: dropped
+            (Fr::zero(), mono(&r, &[0, 0, 1])),     // zero coeff: dropped
         ];
         let p = Poly::from_terms(&r, terms);
         p.assert_canonical(&r);
@@ -912,7 +921,10 @@ mod tests {
         );
         let q = Poly::from_terms(
             &r,
-            vec![(Fr::from(4u64), mono(&r, &[1, 1, 0])), (Fr::from(5u64), mono(&r, &[0, 0, 1]))],
+            vec![
+                (Fr::from(4u64), mono(&r, &[1, 1, 0])),
+                (Fr::from(5u64), mono(&r, &[0, 0, 1])),
+            ],
         );
         let m = mono(&r, &[1, 0, 0]);
         let c = Fr::from(2u64);
@@ -946,7 +958,13 @@ mod tests {
     #[test]
     fn leading_invariants() {
         let r = mk_ring(2);
-        let p = Poly::from_terms(&r, vec![(Fr::from(3u64), mono(&r, &[2, 0])), (Fr::from(4u64), mono(&r, &[1, 1]))]);
+        let p = Poly::from_terms(
+            &r,
+            vec![
+                (Fr::from(3u64), mono(&r, &[2, 0])),
+                (Fr::from(4u64), mono(&r, &[1, 1])),
+            ],
+        );
         let (c, m) = p.leading().unwrap();
         assert_eq!(c, Fr::from(3u64));
         assert_eq!(m.total_deg(), 2);
