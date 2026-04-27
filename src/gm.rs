@@ -7,7 +7,7 @@
 //!   leading monomials ⇒ pair eliminated). Returns `None` when the
 //!   pair is pruned.
 //! * [`chain_crit_normal`] — run the chain criterion on a candidate
-//!   `BSet` against existing [`SBasis`] and [`LSet`] state. Prunes
+//!   `BSet<W>` against existing [`SBasis`] and [`LSet<W>`] state. Prunes
 //!   pairs in B whose LCM is covered by another pair's LCM; marks
 //!   pairs in L that `lm(h)` covers.
 //! * [`enterpairs`] — the whole pipeline: enumerate candidate
@@ -43,16 +43,16 @@ use crate::sbasis::SBasis;
 /// S-polynomial reduces to zero before it can contribute anything
 /// new to the basis.
 #[allow(clippy::too_many_arguments)]
-pub fn enter_one_pair_normal<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    ring: &Ring<F>,
-    s_basis: &SBasis<F, M>,
+pub fn enter_one_pair_normal<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    ring: &Ring<F, W>,
+    s_basis: &SBasis<F, M, W>,
     s_idx: u32,
     h_idx: u32,
-    h_lm: &MonoTerm,
+    h_lm: &MonoTerm<W>,
     h_lm_sev: u64,
     h_sugar: u32,
     arrival: u64,
-) -> Option<Pair> {
+) -> Option<Pair<W>> {
     debug_assert!(s_idx < h_idx);
     debug_assert!(!s_basis.is_redundant(s_idx as usize));
 
@@ -88,7 +88,7 @@ pub fn enter_one_pair_normal<F: Field + Copy + Send + Sync, M: Monomial<F> + Fro
     // deg(m_h) = deg(lcm) - deg(lm(h)), same for m_s. Every existing
     // basis element's sugar is treated as its leading total degree
     // in this bootstrap; the future bba driver may thread a richer
-    // sugar through the Pair via `h_sugar`.
+    // sugar through the Pair<W> via `h_sugar`.
     let deg_lcm = lcm.total_deg();
     let deg_h = h_lm.total_deg();
     let s_deg = s_basis.lm_degs()[s_idx as usize];
@@ -101,10 +101,10 @@ pub fn enter_one_pair_normal<F: Field + Copy + Send + Sync, M: Monomial<F> + Fro
 
 /// Coprime check on monomials: no variable has nonzero exponent in
 /// both. Called *after* the sev pre-filter rejects obvious shares.
-fn monomials_are_coprime<F: Field + Copy + Send + Sync>(
-    a: &MonoTerm,
-    b: &MonoTerm,
-    ring: &Ring<F>,
+fn monomials_are_coprime<F: Field + Copy + Send + Sync, const W: usize>(
+    a: &MonoTerm<W>,
+    b: &MonoTerm<W>,
+    ring: &Ring<F, W>,
 ) -> bool {
     let n = ring.nvars();
     for i in 0..n {
@@ -118,7 +118,7 @@ fn monomials_are_coprime<F: Field + Copy + Send + Sync>(
 }
 
 /// Chain criterion on a candidate B set and the existing basis +
-/// LSet.
+/// LSet<W>.
 ///
 /// Two phases:
 ///
@@ -134,14 +134,14 @@ fn monomials_are_coprime<F: Field + Copy + Send + Sync>(
 ///    the pair is covered by the chain `(i, h), (j, h)` and gets
 ///    tombstoned. The equality guards preserve the pair whose LCM
 ///    would collapse onto an S–h pair.
-pub fn chain_crit_normal<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    ring: &Ring<F>,
-    s_basis: &SBasis<F, M>,
-    h_lm: &MonoTerm,
+pub fn chain_crit_normal<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    ring: &Ring<F, W>,
+    s_basis: &SBasis<F, M, W>,
+    h_lm: &MonoTerm<W>,
     h_lm_sev: u64,
     h_idx: u32,
-    b: &mut BSet,
-    l: &mut LSet,
+    b: &mut BSet<W>,
+    l: &mut LSet<W>,
 ) {
     // Phase 1: B-internal dedup.
     //
@@ -149,7 +149,7 @@ pub fn chain_crit_normal<F: Field + Copy + Send + Sync, M: Monomial<F> + From<Mo
     // lcm and kill it. The naive O(n^2) scalar inner loop tests
     // `divides_with_sev(a.lcm_sev, c.lcm_sev, ...)` for every j.
     // ADR-009 replaces the scalar sev pre-filter with a SIMD-batched
-    // scan over the BSet's flat `lcm_sevs` array.
+    // scan over the BSet<W>'s flat `lcm_sevs` array.
     //
     // Sev pre-filter for "a divides c": every set bit of a.lcm_sev
     // must also be set in c.lcm_sev. That's the "subset_mask ⊆
@@ -255,13 +255,13 @@ pub fn chain_crit_normal<F: Field + Copy + Send + Sync, M: Monomial<F> + From<Mo
 /// returned count. The returned value is the number of pairs that
 /// actually made it into L (after both phases of the chain crit).
 #[allow(clippy::too_many_arguments)]
-pub fn enterpairs<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    ring: &Ring<F>,
-    s_basis: &SBasis<F, M>,
+pub fn enterpairs<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    ring: &Ring<F, W>,
+    s_basis: &SBasis<F, M, W>,
     h_idx: u32,
-    h_poly: &Poly<F, M>,
+    h_poly: &Poly<F, M, W>,
     h_sugar: u32,
-    l_set: &mut LSet,
+    l_set: &mut LSet<W>,
     arrival_start: u64,
 ) -> usize {
     let h_lm = *h_poly.leading().expect("h is nonzero").1.as_mono_term();
@@ -294,10 +294,10 @@ pub fn enterpairs<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>
 /// `enterS`: append `h` to the basis with redundancy marking. This
 /// is just `SBasis::insert`; re-exported here so the bba driver's
 /// call site reads `enter_s(h)` symmetric with `enterpairs(h)`.
-pub fn enter_s<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    ring: &Ring<F>,
-    s_basis: &mut SBasis<F, M>,
-    h: Poly<F, M>,
+pub fn enter_s<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    ring: &Ring<F, W>,
+    s_basis: &mut SBasis<F, M, W>,
+    h: Poly<F, M, W>,
 ) -> usize {
     s_basis.insert(ring, h)
 }

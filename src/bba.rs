@@ -8,7 +8,7 @@
 //!
 //! The algorithm is the classical Buchberger loop with Gebauer–Möller
 //! pair criteria, using the data structures already in the crate:
-//! [`SBasis`] for the growing basis, [`LSet`] for the pair queue, the
+//! [`SBasis`] for the growing basis, [`LSet<W>`] for the pair queue, the
 //! `gm` module for `enter_s` / `enterpairs`, [`LObject`] as the
 //! reducer transient, and the geobucket [`KBucket`] inside the
 //! LObject.
@@ -56,11 +56,12 @@ use crate::sbasis::SBasis;
 /// ambiguity, so the output is still a function of the ideal.
 pub fn compute_gb<
     F: Field + Copy + Send + Sync + 'static,
-    M: Monomial<F> + From<MonoTerm> + 'static,
+    M: Monomial<F, W> + From<MonoTerm<W>> + 'static,
+    const W: usize,
 >(
-    ring: Arc<Ring<F>>,
-    input: Vec<Poly<F, M>>,
-) -> Vec<Poly<F, M>> {
+    ring: Arc<Ring<F, W>>,
+    input: Vec<Poly<F, M, W>>,
+) -> Vec<Poly<F, M, W>> {
     let num_threads = ark_gb_threads();
     if num_threads == 1 {
         compute_gb_serial(ring, input)
@@ -91,11 +92,12 @@ fn ark_gb_threads() -> usize {
 /// changing the public API.
 pub fn compute_gb_serial<
     F: Field + Copy + Send + Sync + 'static,
-    M: Monomial<F> + From<MonoTerm> + 'static,
+    M: Monomial<F, W> + From<MonoTerm<W>> + 'static,
+    const W: usize,
 >(
-    ring: Arc<Ring<F>>,
-    input: Vec<Poly<F, M>>,
-) -> Vec<Poly<F, M>> {
+    ring: Arc<Ring<F, W>>,
+    input: Vec<Poly<F, M, W>>,
+) -> Vec<Poly<F, M, W>> {
     let mut s_basis = SBasis::new();
     let mut l_set = LSet::new();
     let mut next_arrival: u64 = 0;
@@ -179,7 +181,7 @@ pub fn compute_gb_serial<
     // sorted. We sort **ascending** by leading monomial to match
     // Singular's `sort(G)[1]` convention (which "smaller polys come
     // first" calls out — the fixture files are in this order too).
-    let mut out: Vec<Poly<F, M>> = s_basis.iter_active().map(|(_, p)| p.clone()).collect();
+    let mut out: Vec<Poly<F, M, W>> = s_basis.iter_active().map(|(_, p)| p.clone()).collect();
     out.sort_by(|a, b| {
         let lm_a = a.leading().expect("active basis element is nonzero").1;
         let lm_b = b.leading().expect("active basis element is nonzero").1;
@@ -210,12 +212,13 @@ pub fn compute_gb_serial<
 /// this is the right contract.
 fn insert_and_generate_pairs_with_sugar<
     F: Field + Copy + Send + Sync,
-    M: Monomial<F> + From<MonoTerm>,
+    M: Monomial<F, W> + From<MonoTerm<W>>,
+    const W: usize,
 >(
-    ring: &Ring<F>,
-    s_basis: &mut SBasis<F, M>,
-    l_set: &mut LSet,
-    h: Poly<F, M>,
+    ring: &Ring<F, W>,
+    s_basis: &mut SBasis<F, M, W>,
+    l_set: &mut LSet<W>,
+    h: Poly<F, M, W>,
     sugar: u32,
     next_arrival: u64,
 ) -> u64 {
@@ -250,10 +253,10 @@ fn insert_and_generate_pairs_with_sugar<
 /// at the dispatch site, not at the function definition). The
 /// cargo test suite cross-validates them via the
 /// `geobucket_and_heap_reducer_agree` test below.
-fn reduce_lobject<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    lobj: &mut LObject<F, M>,
-    s_basis: &SBasis<F, M>,
-    ring: &Arc<Ring<F>>,
+fn reduce_lobject<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    lobj: &mut LObject<F, M, W>,
+    s_basis: &SBasis<F, M, W>,
+    ring: &Arc<Ring<F, W>>,
 ) {
     #[cfg(not(feature = "heap_reducer"))]
     reduce_lobject_geobucket(lobj, s_basis, ring);
@@ -270,10 +273,10 @@ fn reduce_lobject<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>
 /// is *not* set (e.g. `--no-default-features`). Otherwise kept
 /// available as a public symbol for direct use and for the
 /// `geobucket_and_heap_reducer_agree` cross-validation test.
-pub fn reduce_lobject_geobucket<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    lobj: &mut LObject<F, M>,
-    s_basis: &SBasis<F, M>,
-    ring: &Arc<Ring<F>>,
+pub fn reduce_lobject_geobucket<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    lobj: &mut LObject<F, M, W>,
+    s_basis: &SBasis<F, M, W>,
+    ring: &Arc<Ring<F, W>>,
 ) {
     loop {
         if lobj.is_zero() {
@@ -332,10 +335,10 @@ pub fn reduce_lobject_geobucket<F: Field + Copy + Send + Sync, M: Monomial<F> + 
 /// construction per reduction. If the v6 profile shows that as
 /// significant, the deferred LObject restructure (see ADR-008)
 /// would eliminate it.
-pub fn reduce_lobject_heap<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    lobj: &mut LObject<F, M>,
-    s_basis: &SBasis<F, M>,
-    ring: &Arc<Ring<F>>,
+pub fn reduce_lobject_heap<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    lobj: &mut LObject<F, M, W>,
+    s_basis: &SBasis<F, M, W>,
+    ring: &Arc<Ring<F, W>>,
 ) {
     use crate::reducer::{Reducer, ReducerHeap};
 
@@ -395,11 +398,11 @@ pub fn reduce_lobject_heap<F: Field + Copy + Send + Sync, M: Monomial<F> + From<
 ///
 /// See `~/ark_gb/docs/design-decisions.md` ADR-007 for the rationale.
 #[inline]
-fn find_divisor_idx<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    s_basis: &SBasis<F, M>,
+fn find_divisor_idx<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    s_basis: &SBasis<F, M, W>,
     lm_sev: u64,
-    lm: &crate::monomial::MonoTerm,
-    ring: &Ring<F>,
+    lm: &crate::monomial::MonoTerm<W>,
+    ring: &Ring<F, W>,
 ) -> Option<usize> {
     let sevs = s_basis.sevs();
     let lms = s_basis.lms();
@@ -417,7 +420,7 @@ fn find_divisor_idx<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTer
         }
         // Sev passes; now check redundant flag and the actual divides.
         // ADR-010: read the leading monomial from the lms cache
-        // (flat Vec<MonoTerm>, contiguous) instead of dereferencing
+        // (flat Vec<MonoTerm<W>>, contiguous) instead of dereferencing
         // s_basis.poly(idx) (a Box<Poly> with separately-allocated
         // memory). Eliminates the L1/L2 miss that the v7 perf annotate
         // showed at 11 % of within-function cycles in
@@ -453,9 +456,9 @@ use crate::simd::find_sev_match;
 /// tail-reduction passes are idempotent: the output of the first
 /// pass has all tail terms normal-form-reduced, so the second pass
 /// finds nothing further to do.
-fn tail_reduce_all<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    s_basis: &mut SBasis<F, M>,
-    ring: &Arc<Ring<F>>,
+fn tail_reduce_all<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    s_basis: &mut SBasis<F, M, W>,
+    ring: &Arc<Ring<F, W>>,
 ) {
     let n = s_basis.len();
     for i in 0..n {
@@ -507,11 +510,11 @@ fn tail_reduce_all<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm
 /// `done` and re-scan the bucket for its new leader. The parked
 /// terms accumulate in strict descending order because
 /// `extract_leading` always yields the bucket's current max.
-fn reduce_tail<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    tail: Poly<F, M>,
-    s_basis: &SBasis<F, M>,
-    ring: &Arc<Ring<F>>,
-) -> Poly<F, M> {
+fn reduce_tail<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    tail: Poly<F, M, W>,
+    s_basis: &SBasis<F, M, W>,
+    ring: &Arc<Ring<F, W>>,
+) -> Poly<F, M, W> {
     if tail.is_zero() {
         return tail;
     }
@@ -593,12 +596,12 @@ fn reduce_tail<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
 /// ring's ordering. `(lc, lm)` is prepended and the resulting vector
 /// is already in strictly-descending order with no duplicates, so we
 /// take the fast path and skip the sort.
-fn prepend_leading<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
+fn prepend_leading<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
     lc: F,
     lm: &M,
-    tail: Poly<F, M>,
-    ring: &Ring<F>,
-) -> Poly<F, M> {
+    tail: Poly<F, M, W>,
+    ring: &Ring<F, W>,
+) -> Poly<F, M, W> {
     let mut terms: Vec<(F, M)> = Vec::with_capacity(tail.len() + 1);
     terms.push((lc, *lm));
     for (c, m) in tail.iter() {
@@ -625,7 +628,7 @@ mod tests {
     #[test]
     fn empty_input_gives_empty_gb() {
         let r = mk_ring(3);
-        let gb = compute_gb::<Fr, GrevLexTerm>(Arc::clone(&r), vec![]);
+        let gb = compute_gb::<Fr, GrevLexTerm, 4>(Arc::clone(&r), vec![]);
         assert!(gb.is_empty());
     }
 

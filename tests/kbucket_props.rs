@@ -32,7 +32,7 @@ fn ring_strategy() -> impl Strategy<Value = Arc<Ring<Fr>>> {
     (1u32..=MAX_VARS).prop_map(|n| Arc::new(Ring::<Fr>::new(n).unwrap()))
 }
 
-fn poly_strategy(ring: Arc<Ring<Fr>>, max_terms: usize) -> impl Strategy<Value = Poly<Fr>> {
+fn poly_strategy(ring: Arc<Ring<Fr>>, max_terms: usize) -> impl Strategy<Value = Poly<Fr, GrevLexTerm>> {
     let n = ring.nvars() as usize;
     prop::collection::vec(
         (arb_nonzero_fr(), prop::collection::vec(0u32..=MAX_EXP, n)),
@@ -61,7 +61,7 @@ fn mono_strategy(ring: Arc<Ring<Fr>>, max_exp: u32) -> impl Strategy<Value = Gre
 /// A seed polynomial plus a list of reducers `(m_i, c_i, q_i)`.
 #[allow(clippy::type_complexity)]
 fn bucket_workload_strategy()
--> impl Strategy<Value = (Arc<Ring<Fr>>, Poly<Fr>, Vec<(GrevLexTerm, Fr, Poly<Fr>)>)> {
+-> impl Strategy<Value = (Arc<Ring<Fr>>, Poly<Fr, GrevLexTerm>, Vec<(GrevLexTerm, Fr, Poly<Fr, GrevLexTerm>)>)> {
     ring_strategy().prop_flat_map(|r| {
         // Cap monomial exponents at 3 and poly-term exponents at 3 so
         // their products (≤ 6) fit the 8-bit budget comfortably.
@@ -82,7 +82,7 @@ fn bucket_workload_strategy()
 /// `p ← p - c*m*q` via `Poly::sub_mul_term`. Per ADR-018,
 /// `sub_mul_term` is infallible in release; the workload strategies
 /// keep exponents well within the 7-bit budget.
-fn slow_fold(ring: &Ring<Fr>, seed: Poly<Fr>, ops: &[(GrevLexTerm, Fr, Poly<Fr>)]) -> Poly<Fr> {
+fn slow_fold(ring: &Ring<Fr>, seed: Poly<Fr, GrevLexTerm>, ops: &[(GrevLexTerm, Fr, Poly<Fr, GrevLexTerm>)]) -> Poly<Fr, GrevLexTerm> {
     let mut acc = seed;
     for (m, c, q) in ops {
         acc = acc.sub_mul_term(*c, m, q, ring);
@@ -93,9 +93,9 @@ fn slow_fold(ring: &Ring<Fr>, seed: Poly<Fr>, ops: &[(GrevLexTerm, Fr, Poly<Fr>)
 /// Bucket-path fold.
 fn bucket_fold(
     ring: Arc<Ring<Fr>>,
-    seed: Poly<Fr>,
-    ops: &[(GrevLexTerm, Fr, Poly<Fr>)],
-) -> Poly<Fr> {
+    seed: Poly<Fr, GrevLexTerm>,
+    ops: &[(GrevLexTerm, Fr, Poly<Fr, GrevLexTerm>)],
+) -> Poly<Fr, GrevLexTerm> {
     let mut b = KBucket::from_poly(Arc::clone(&ring), seed);
     for (m, c, q) in ops {
         b.minus_m_mult_p(m, *c, q);
@@ -247,7 +247,7 @@ fn small_bba_like_workload_matches() {
             (Fr::from(37u64), mono(&r, &[0, 1, 0, 3])),
         ],
     );
-    let ops: Vec<(GrevLexTerm, Fr, Poly<Fr>)> = vec![
+    let ops: Vec<(GrevLexTerm, Fr, Poly<Fr, GrevLexTerm>)> = vec![
         (
             mono(&r, &[1, 0, 0, 0]),
             Fr::from(3u64),

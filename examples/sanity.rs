@@ -15,7 +15,7 @@ fn build_ring() -> Ring<Fr> {
     Ring::<Fr>::new(10).unwrap()
 }
 
-fn random_poly(ring: &Ring<Fr>, nterms: usize, seed: u64) -> Poly<Fr> {
+fn random_poly(ring: &Ring<Fr>, nterms: usize, seed: u64) -> Poly<Fr, GrevLexTerm> {
     let n = ring.nvars() as usize;
     let mut s = seed;
     let mut next = || {

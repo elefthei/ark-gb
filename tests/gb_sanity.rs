@@ -1,7 +1,7 @@
 //! Hand-checkable closed-form Gröbner basis sanity tests.
 //!
 //! These cases have GBs with known closed forms that we can write
-//! out as literal `Poly<Fr>` values; the test asserts the structure
+//! out as literal `Poly<Fr, GrevLexTerm>` values; the test asserts the structure
 //! of `compute_gb`'s output directly without going through
 //! [`ark_gb::validate::is_groebner_basis`]. This breaks the cycle
 //! "buggy reducer in `compute_gb` would also let a buggy GB

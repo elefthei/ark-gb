@@ -45,7 +45,7 @@ fn build_ring() -> Arc<Ring<Fr>> {
     Arc::new(Ring::<Fr>::new(8).unwrap())
 }
 
-fn random_poly(ring: &Ring<Fr>, rng: &mut Lcg, nterms: usize, max_exp: u32) -> Poly<Fr> {
+fn random_poly(ring: &Ring<Fr>, rng: &mut Lcg, nterms: usize, max_exp: u32) -> Poly<Fr, GrevLexTerm> {
     let n = ring.nvars() as usize;
     let mut pairs = Vec::with_capacity(nterms);
     for _ in 0..nterms {
@@ -79,7 +79,7 @@ fn main() {
     let mut rng = Lcg::new(0xDEADBEEF);
     let seed = random_poly(&ring, &mut rng, 200, 3);
     let reducer_count = 200;
-    let mut reducers: Vec<(GrevLexTerm, Fr, Poly<Fr>)> = Vec::with_capacity(reducer_count);
+    let mut reducers: Vec<(GrevLexTerm, Fr, Poly<Fr, GrevLexTerm>)> = Vec::with_capacity(reducer_count);
     for _ in 0..reducer_count {
         // Small multipliers so the product fits in the 8-bit budget.
         let m = random_mono(&ring, &mut rng, 2);

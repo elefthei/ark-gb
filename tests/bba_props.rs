@@ -48,7 +48,7 @@ fn mono(r: &Ring<Fr>, e: &[u32]) -> GrevLexTerm {
 
 /// Generate a random polynomial in `r` with at most `max_terms`
 /// monomials of per-variable exponent at most `max_exp`.
-fn random_poly(rng: &mut Prng, ring: &Ring<Fr>, max_terms: u32, max_exp: u32) -> Poly<Fr> {
+fn random_poly(rng: &mut Prng, ring: &Ring<Fr>, max_terms: u32, max_exp: u32) -> Poly<Fr, GrevLexTerm> {
     let n = ring.nvars() as usize;
     let t = rng.in_range(1, max_terms);
     let mut terms = Vec::with_capacity(t as usize);
@@ -65,7 +65,7 @@ fn random_poly(rng: &mut Prng, ring: &Ring<Fr>, max_terms: u32, max_exp: u32) ->
 
 /// Reduce `p` to normal form against `gb` (assumed to be a GB of
 /// some ideal I). Returns the normal form.
-fn normal_form(p: &Poly<Fr>, gb: &[Poly<Fr>], ring: &Ring<Fr>) -> Poly<Fr> {
+fn normal_form(p: &Poly<Fr, GrevLexTerm>, gb: &[Poly<Fr, GrevLexTerm>], ring: &Ring<Fr>) -> Poly<Fr, GrevLexTerm> {
     let mut cur = p.clone();
     'outer: loop {
         if cur.is_zero() {
@@ -137,7 +137,7 @@ fn determinism_small_ideals() {
     let mut rng = Prng::new(0x00C0_FFEE_1234_5678);
     for _ in 0..50 {
         let ngens = rng.in_range(1, 4);
-        let gens: Vec<Poly<Fr>> = (0..ngens)
+        let gens: Vec<Poly<Fr, GrevLexTerm>> = (0..ngens)
             .map(|_| random_poly(&mut rng, &r, 4, 2))
             .collect();
         let gb1 = compute_gb(Arc::clone(&r), gens.clone());
@@ -152,7 +152,7 @@ fn input_order_invariance_small_ideals() {
     let mut rng = Prng::new(0xF00D_BABE);
     for _ in 0..40 {
         let ngens = rng.in_range(2, 4);
-        let gens: Vec<Poly<Fr>> = (0..ngens)
+        let gens: Vec<Poly<Fr, GrevLexTerm>> = (0..ngens)
             .map(|_| random_poly(&mut rng, &r, 3, 2))
             .collect();
         let gb_orig = compute_gb(Arc::clone(&r), gens.clone());
@@ -169,7 +169,7 @@ fn idempotence_small_ideals() {
     let mut rng = Prng::new(0xDEAD_BEEF);
     for _ in 0..30 {
         let ngens = rng.in_range(1, 3);
-        let gens: Vec<Poly<Fr>> = (0..ngens)
+        let gens: Vec<Poly<Fr, GrevLexTerm>> = (0..ngens)
             .map(|_| random_poly(&mut rng, &r, 3, 2))
             .collect();
         let gb_once = compute_gb(Arc::clone(&r), gens);
@@ -184,7 +184,7 @@ fn every_input_reduces_to_zero() {
     let mut rng = Prng::new(0xBADF00D);
     for _ in 0..25 {
         let ngens = rng.in_range(1, 4);
-        let gens: Vec<Poly<Fr>> = (0..ngens)
+        let gens: Vec<Poly<Fr, GrevLexTerm>> = (0..ngens)
             .map(|_| random_poly(&mut rng, &r, 3, 2))
             .collect();
         let gb = compute_gb(Arc::clone(&r), gens.clone());
@@ -246,7 +246,7 @@ fn parallel_matches_serial_small_ideals() {
     let mut rng = Prng::new(0x5A5A_A5A5_1111_2222);
     for iter in 0..30 {
         let ngens = rng.in_range(1, 4);
-        let gens: Vec<Poly<Fr>> = (0..ngens)
+        let gens: Vec<Poly<Fr, GrevLexTerm>> = (0..ngens)
             .map(|_| random_poly(&mut rng, &r, 4, 2))
             .collect();
         let gb_serial = compute_gb(Arc::clone(&r), gens.clone());
@@ -265,7 +265,7 @@ fn parallel_reduced_gb_invariant() {
     let mut rng = Prng::new(0xDEAD_D00D);
     for _ in 0..20 {
         let ngens = rng.in_range(2, 4);
-        let gens: Vec<Poly<Fr>> = (0..ngens)
+        let gens: Vec<Poly<Fr, GrevLexTerm>> = (0..ngens)
             .map(|_| random_poly(&mut rng, &r, 4, 2))
             .collect();
         let gb_a = compute_gb_parallel(Arc::clone(&r), gens.clone(), 4).unwrap();
@@ -280,7 +280,7 @@ fn parallel_idempotence_t4() {
     let mut rng = Prng::new(0x1234_BEEF_BABE);
     for _ in 0..15 {
         let ngens = rng.in_range(1, 3);
-        let gens: Vec<Poly<Fr>> = (0..ngens)
+        let gens: Vec<Poly<Fr, GrevLexTerm>> = (0..ngens)
             .map(|_| random_poly(&mut rng, &r, 3, 2))
             .collect();
         let gb_once = compute_gb_parallel(Arc::clone(&r), gens, 4).unwrap();
@@ -295,7 +295,7 @@ fn parallel_every_input_reduces_to_zero_t4() {
     let mut rng = Prng::new(0xF00F_B00F);
     for _ in 0..15 {
         let ngens = rng.in_range(1, 4);
-        let gens: Vec<Poly<Fr>> = (0..ngens)
+        let gens: Vec<Poly<Fr, GrevLexTerm>> = (0..ngens)
             .map(|_| random_poly(&mut rng, &r, 3, 2))
             .collect();
         let gb = compute_gb_parallel(Arc::clone(&r), gens.clone(), 4).unwrap();
@@ -312,7 +312,7 @@ fn parallel_stable_across_thread_counts() {
     let mut rng = Prng::new(0xA1B2_C3D4);
     for _ in 0..10 {
         let ngens = rng.in_range(2, 4);
-        let gens: Vec<Poly<Fr>> = (0..ngens)
+        let gens: Vec<Poly<Fr, GrevLexTerm>> = (0..ngens)
             .map(|_| random_poly(&mut rng, &r, 4, 2))
             .collect();
         let gb2 = compute_gb_parallel(Arc::clone(&r), gens.clone(), 2).unwrap();

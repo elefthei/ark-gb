@@ -204,11 +204,11 @@ impl<F: Field + Copy + Send + Sync, M: Monomial<F, W>, const W: usize> Default f
 /// Trivially `Mutex<LSet>` — the serial `LSet` already has the
 /// right API; we just ensure all accesses go through the lock.
 #[derive(Debug)]
-pub struct SharedLSet {
-    inner: Mutex<LSet>,
+pub struct SharedLSet<const W: usize = 4> {
+    inner: Mutex<LSet<W>>,
 }
 
-impl SharedLSet {
+impl<const W: usize> SharedLSet<W> {
     /// Empty queue.
     pub fn new() -> Self {
         Self {
@@ -217,7 +217,7 @@ impl SharedLSet {
     }
 
     /// Pop the next pair, if any.
-    pub fn pop(&self) -> Option<crate::pair::Pair> {
+    pub fn pop(&self) -> Option<crate::pair::Pair<W>> {
         self.inner.lock().unwrap().pop()
     }
 
@@ -225,7 +225,7 @@ impl SharedLSet {
     /// phase which needs to hold the lock across a "drop pairs, then
     /// insert new pairs" sequence (phase iii of enterpairs per
     /// rust-bba-port-plan.md §10.2).
-    pub fn lock(&self) -> std::sync::MutexGuard<'_, LSet> {
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, LSet<W>> {
         self.inner.lock().unwrap()
     }
 
@@ -240,7 +240,7 @@ impl SharedLSet {
     }
 }
 
-impl Default for SharedLSet {
+impl<const W: usize> Default for SharedLSet<W> {
     fn default() -> Self {
         Self::new()
     }
@@ -263,7 +263,7 @@ pub struct Computation<F: Field + Copy + Send + Sync, M: Monomial<F, W>, const W
     /// The growing basis.
     pub basis: SharedSBasis<F, M, W>,
     /// The pair queue.
-    pub l_set: SharedLSet,
+    pub l_set: SharedLSet<W>,
     /// Cancellation flag. Workers poll at cursor boundaries.
     pub cancel: Arc<AtomicBool>,
     /// Monotonic "arrival" counter for the pair queue. Each new

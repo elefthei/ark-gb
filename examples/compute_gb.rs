@@ -33,7 +33,7 @@ fn mono(r: &Ring<Fr>, e: &[u32]) -> GrevLexTerm {
 /// variable names. Good enough for human inspection; not a parser-
 /// compatible round-trip (see the fixture parser in the tests for
 /// that).
-fn poly_to_string(p: &Poly<Fr>, ring: &Ring<Fr>, var_names: &[&str]) -> String {
+fn poly_to_string(p: &Poly<Fr, GrevLexTerm>, ring: &Ring<Fr>, var_names: &[&str]) -> String {
     if p.is_zero() {
         return "0".to_string();
     }
@@ -79,7 +79,7 @@ fn poly_to_string(p: &Poly<Fr>, ring: &Ring<Fr>, var_names: &[&str]) -> String {
     out
 }
 
-fn run_cyclic(ring: Arc<Ring<Fr>>, name: &str, input: Vec<Poly<Fr>>, var_names: &[&str]) {
+fn run_cyclic(ring: Arc<Ring<Fr>>, name: &str, input: Vec<Poly<Fr, GrevLexTerm>>, var_names: &[&str]) {
     println!("=== {} ===", name);
     let t = Instant::now();
     let gb = compute_gb(Arc::clone(&ring), input);

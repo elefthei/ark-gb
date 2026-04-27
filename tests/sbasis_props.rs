@@ -60,7 +60,7 @@ proptest! {
 
     #[test]
     fn redundancy_matches_naive((r, lms) in basis_strategy()) {
-        let mut s = SBasis::<Fr>::new();
+        let mut s = SBasis::<Fr, GrevLexTerm>::new();
         for m in &lms {
             s.insert(&r, Poly::monomial(&r, Fr::one(), GrevLexTerm::from(*m)));
         }
@@ -72,7 +72,7 @@ proptest! {
 
     #[test]
     fn len_counts_all_polys((r, lms) in basis_strategy()) {
-        let mut s = SBasis::<Fr>::new();
+        let mut s = SBasis::<Fr, GrevLexTerm>::new();
         for m in &lms {
             s.insert(&r, Poly::monomial(&r, Fr::one(), GrevLexTerm::from(*m)));
         }
@@ -83,7 +83,7 @@ proptest! {
 
     #[test]
     fn sevs_and_lm_degs_match_polys((r, lms) in basis_strategy()) {
-        let mut s = SBasis::<Fr>::new();
+        let mut s = SBasis::<Fr, GrevLexTerm>::new();
         for m in &lms {
             s.insert(&r, Poly::monomial(&r, Fr::one(), GrevLexTerm::from(*m)));
         }
