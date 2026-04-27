@@ -355,7 +355,7 @@ mod tests {
         GrevLexTerm::from(MonoTerm::from_exponents(r, e).unwrap())
     }
 
-    fn poly1(r: &Ring<Fr>, c: Fr, e: &[u32]) -> Poly<Fr> {
+    fn poly1(r: &Ring<Fr>, c: Fr, e: &[u32]) -> Poly<Fr, GrevLexTerm> {
         Poly::<Fr, GrevLexTerm>::monomial(r, c, mono(r, e))
     }
 

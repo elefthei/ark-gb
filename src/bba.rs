@@ -703,7 +703,7 @@ mod tests {
 
         for (basis_terms, f_terms) in cases {
             // Build the basis polynomials and load them into an SBasis.
-            let basis_polys: Vec<Poly<Fr>> = basis_terms
+            let basis_polys: Vec<Poly<Fr, GrevLexTerm>> = basis_terms
                 .into_iter()
                 .map(|terms| {
                     Poly::from_terms(

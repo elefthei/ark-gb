@@ -51,7 +51,7 @@ use super::node_pool::{alloc, dealloc};
 ///   raw pointer). The pool-owning thread distinction matters only
 ///   at allocation / deallocation time — reading the chain on a
 ///   different thread is sound.
-/// * **`Sync`**: a `&Poly<F, M>` can be shared across threads because all
+/// * **`Sync`**: a `&Poly<F, M, W>` can be shared across threads because all
 ///   read paths (`iter`, `cursor`, `leading`, field accessors) treat
 ///   the chain as immutable; no interior mutation happens behind a
 ///   shared reference.
@@ -72,7 +72,7 @@ use super::node_pool::{alloc, dealloc};
 /// If ark_gb's parallel story changes (`SINGULAR_THREADS>1`; cf.
 /// `~/Singular-parallel-bba`), the pool design has to be revisited;
 /// this is tracked as follow-up work in ADR-016.
-pub struct Poly<F: Field + Copy, M: Monomial<F> = crate::monomial::GrevLexTerm> {
+pub struct Poly<F: Field + Copy, M: Monomial<F, W>, const W: usize = 4> {
     /// First node (the leading term), or `None` for the zero poly.
     head: Option<NonNull<Node<F, M>>>,
     /// Number of live nodes reachable from `head`. Maintained on
@@ -91,8 +91,8 @@ pub struct Poly<F: Field + Copy, M: Monomial<F> = crate::monomial::GrevLexTerm> 
 // SAFETY: See the `Send + Sync` safety section on `Poly` above. The
 // inner `NonNull<Node<F, M>>` is the only reason these auto-traits don't
 // apply automatically.
-unsafe impl<F: Field + Copy + Send, M: Monomial<F>> Send for Poly<F, M> {}
-unsafe impl<F: Field + Copy + Sync, M: Monomial<F>> Sync for Poly<F, M> {}
+unsafe impl<F: Field + Copy + Send, M: Monomial<F, W> + Send, const W: usize> Send for Poly<F, M, W> {}
+unsafe impl<F: Field + Copy + Sync, M: Monomial<F, W> + Sync, const W: usize> Sync for Poly<F, M, W> {}
 
 /// One term's worth of storage in the linked list.
 ///
@@ -106,7 +106,7 @@ pub(super) struct Node<F, M> {
     pub(super) next: Option<NonNull<Node<F, M>>>,
 }
 
-impl<F: Field + Copy + std::fmt::Debug, M: Monomial<F>> std::fmt::Debug for Poly<F, M> {
+impl<F: Field + Copy + std::fmt::Debug, M: Monomial<F, W>, const W: usize> std::fmt::Debug for Poly<F, M, W> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut dbg = f.debug_struct("Poly");
         dbg.field("len", &self.len)
@@ -127,7 +127,7 @@ impl<F: Field + Copy + std::fmt::Debug, M: Monomial<F>> std::fmt::Debug for Poly
     }
 }
 
-impl<F: Field + Copy, M: Monomial<F>> Drop for Poly<F, M> {
+impl<F: Field + Copy, M: Monomial<F, W>, const W: usize> Drop for Poly<F, M, W> {
     /// Iterative drop so a very long chain does not blow the stack.
     /// Every node is handed back to the thread-local [`POOL`]; the
     /// caller takes each node's `next` before releasing it so the
@@ -156,7 +156,7 @@ impl<F: Field + Copy, M: Monomial<F>> Drop for Poly<F, M> {
     }
 }
 
-impl<F: Field + Copy, M: Monomial<F>> Clone for Poly<F, M> {
+impl<F: Field + Copy, M: Monomial<F, W>, const W: usize> Clone for Poly<F, M, W> {
     /// Deep clone: walks the source chain, allocating fresh nodes
     /// through the pool. The sentinel-slot / tail-cursor pattern
     /// matches `merge_consuming` and friends so `Poly::clone` keeps
@@ -196,7 +196,7 @@ impl<F: Field + Copy, M: Monomial<F>> Clone for Poly<F, M> {
     }
 }
 
-impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
+impl<F: Field + Copy, M: Monomial<F, W>, const W: usize> Poly<F, M, W> {
     // ----- Constructors -----
 
     /// The zero polynomial.
@@ -213,7 +213,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
 
     /// A polynomial with a single term `c * m`. Returns the zero
     /// polynomial if `c == 0`. `c` must already be reduced mod `p`.
-    pub fn monomial(_ring: &Ring<F>, c: F, m: M) -> Self {
+    pub fn monomial(_ring: &Ring<F, W>, c: F, m: M) -> Self {
         if c.is_zero() {
             return Self::zero();
         }
@@ -234,7 +234,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     /// already in strictly-descending monomial order with no
     /// duplicates and no zero coefficients. See the `poly_vec`
     /// counterpart for the caller contract.
-    pub fn from_descending_terms_unchecked(_ring: &Ring<F>, terms: Vec<(F, M)>) -> Self {
+    pub fn from_descending_terms_unchecked(_ring: &Ring<F, W>, terms: Vec<(F, M)>) -> Self {
         if terms.is_empty() {
             return Self::zero();
         }
@@ -286,7 +286,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     /// `poly_vec` signature verbatim. Iterates both vectors once to
     /// chain up nodes.
     pub fn from_descending_parallel_unchecked(
-        _ring: &Ring<F>,
+        _ring: &Ring<F, W>,
         coeffs: Vec<F>,
         terms: Vec<M>,
     ) -> Self {
@@ -329,7 +329,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
 
     /// Build from unsorted terms. Sorts descending, de-dupes via sum,
     /// drops zeros. Semantics match `poly_vec::Poly::from_terms`.
-    pub fn from_terms(ring: &Ring<F>, terms: Vec<(F, M)>) -> Self {
+    pub fn from_terms(ring: &Ring<F, W>, terms: Vec<(F, M)>) -> Self {
         let mut terms = terms;
         terms.sort_by_key(|b| std::cmp::Reverse(b.1));
 
@@ -434,7 +434,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     /// Both backends expose the same cursor shape — see the parent
     /// module's dispatcher for context.
     #[inline]
-    pub fn cursor(&self) -> PolyCursor<'_, F, M> {
+    pub fn cursor(&self) -> PolyCursor<'_, F, M, W> {
         PolyCursor {
             node: self.head,
             _marker: std::marker::PhantomData,
@@ -445,7 +445,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     /// `self` is zero or a single term, returns the zero polynomial.
     /// Implemented by walking the tail and cloning each node (O(n)
     /// like the Vec version).
-    pub fn drop_leading(&self) -> Poly<F, M> {
+    pub fn drop_leading(&self) -> Poly<F, M, W> {
         if self.len <= 1 {
             return Self::zero();
         }
@@ -502,7 +502,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     // ----- Arithmetic -----
 
     /// In-place: `self = self + other`.
-    pub fn add_assign(&mut self, other: &Poly<F, M>, ring: &Ring<F>) {
+    pub fn add_assign(&mut self, other: &Poly<F, M, W>, ring: &Ring<F, W>) {
         if other.is_zero() {
             return;
         }
@@ -514,7 +514,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     }
 
     /// Out-of-place addition.
-    pub fn add(&self, other: &Poly<F, M>, ring: &Ring<F>) -> Poly<F, M> {
+    pub fn add(&self, other: &Poly<F, M, W>, ring: &Ring<F, W>) -> Poly<F, M, W> {
         if other.is_zero() {
             return self.clone();
         }
@@ -531,7 +531,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     /// ADR-015 for the contract mapping. Both operands are consumed
     /// (ownership transfer enforces Singular's "Destroys: p, q"
     /// comment at the Rust type level).
-    pub fn add_consuming(self, other: Poly<F, M>, ring: &Ring<F>) -> Poly<F, M> {
+    pub fn add_consuming(self, other: Poly<F, M, W>, ring: &Ring<F, W>) -> Poly<F, M, W> {
         if other.is_zero() {
             return self;
         }
@@ -542,7 +542,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     }
 
     /// Out-of-place subtraction.
-    pub fn sub(&self, other: &Poly<F, M>, ring: &Ring<F>) -> Poly<F, M> {
+    pub fn sub(&self, other: &Poly<F, M, W>, ring: &Ring<F, W>) -> Poly<F, M, W> {
         if other.is_zero() {
             return self.clone();
         }
@@ -553,7 +553,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     }
 
     /// Negation (flip every coefficient).
-    pub fn neg(&self, ring: &Ring<F>) -> Poly<F, M> {
+    pub fn neg(&self, ring: &Ring<F, W>) -> Poly<F, M, W> {
         let _ = ring;
         if self.is_zero() {
             return Self::zero();
@@ -586,7 +586,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
 
     /// Multiply every coefficient by a scalar. Returns zero if
     /// `c == 0`.
-    pub fn scale(&self, c: F, ring: &Ring<F>) -> Poly<F, M> {
+    pub fn scale(&self, c: F, ring: &Ring<F, W>) -> Poly<F, M, W> {
         let _ = ring;
         if c.is_zero() || self.is_zero() {
             return Self::zero();
@@ -619,7 +619,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     /// Multiply every monomial by `m`. Per ADR-018, the caller's ring
     /// construction must ensure no product overflows the 7-bit
     /// per-variable budget; release builds do not check.
-    pub fn shift(&self, m: &M, ring: &Ring<F>) -> Poly<F, M> {
+    pub fn shift(&self, m: &M, ring: &Ring<F, W>) -> Poly<F, M, W> {
         if self.is_zero() {
             return Self::zero();
         }
@@ -654,7 +654,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     /// Standard multiplication via an accumulator (same strategy as
     /// the Vec backend). Per ADR-018, the caller must ensure no
     /// product overflows.
-    pub fn mul(&self, other: &Poly<F, M>, ring: &Ring<F>) -> Poly<F, M> {
+    pub fn mul(&self, other: &Poly<F, M, W>, ring: &Ring<F, W>) -> Poly<F, M, W> {
         if self.is_zero() || other.is_zero() {
             return Self::zero();
         }
@@ -677,7 +677,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     /// Per ADR-018, the caller's ring construction must guarantee
     /// that every `m * q[i]` product stays in-range; release builds
     /// do not check.
-    pub fn sub_mul_term(&self, c: F, m: &M, q: &Poly<F, M>, ring: &Ring<F>) -> Poly<F, M> {
+    pub fn sub_mul_term(&self, c: F, m: &M, q: &Poly<F, M, W>, ring: &Ring<F, W>) -> Poly<F, M, W> {
         if c.is_zero() || q.is_zero() {
             return self.clone();
         }
@@ -790,9 +790,9 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
         mut self,
         c: F,
         m: &M,
-        q: &Poly<F, M>,
-        ring: &Ring<F>,
-    ) -> Poly<F, M> {
+        q: &Poly<F, M, W>,
+        ring: &Ring<F, W>,
+    ) -> Poly<F, M, W> {
         if c.is_zero() || q.is_zero() {
             return self;
         }
@@ -910,7 +910,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     }
 
     /// Scale so the leading coefficient becomes 1.
-    pub fn monic(&self, ring: &Ring<F>) -> Option<Poly<F, M>> {
+    pub fn monic(&self, ring: &Ring<F, W>) -> Option<Poly<F, M, W>> {
         if self.is_zero() {
             return Some(Self::zero());
         }
@@ -925,7 +925,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     // ----- Invariants -----
 
     /// Panic if any internal invariant is violated.
-    pub fn assert_canonical(&self, ring: &Ring<F>) {
+    pub fn assert_canonical(&self, ring: &Ring<F, W>) {
         let mut node = self.head;
         let mut prev: Option<&M> = None;
         let mut count: usize = 0;
@@ -960,7 +960,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     }
 }
 
-impl<F: Field + Copy, M: Monomial<F>> Default for Poly<F, M> {
+impl<F: Field + Copy, M: Monomial<F, W>, const W: usize> Default for Poly<F, M, W> {
     fn default() -> Self {
         Self::zero()
     }
@@ -976,12 +976,12 @@ impl<F: Field + Copy, M: Monomial<F>> Default for Poly<F, M> {
 /// shape on both backends lets [`crate::reducer::Reducer`] work
 /// uniformly.
 #[derive(Clone, Copy)]
-pub struct PolyCursor<'a, F: Field + Copy, M: Monomial<F> = crate::monomial::GrevLexTerm> {
+pub struct PolyCursor<'a, F: Field + Copy, M: Monomial<F, W>, const W: usize = 4> {
     node: Option<NonNull<Node<F, M>>>,
     _marker: std::marker::PhantomData<&'a Node<F, M>>,
 }
 
-impl<'a, F: Field + Copy, M: Monomial<F>> std::fmt::Debug for PolyCursor<'a, F, M> {
+impl<'a, F: Field + Copy, M: Monomial<F, W>, const W: usize> std::fmt::Debug for PolyCursor<'a, F, M, W> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PolyCursor")
             .field("exhausted", &self.node.is_none())
@@ -989,7 +989,7 @@ impl<'a, F: Field + Copy, M: Monomial<F>> std::fmt::Debug for PolyCursor<'a, F, 
     }
 }
 
-impl<'a, F: Field + Copy, M: Monomial<F>> PolyCursor<'a, F, M> {
+impl<'a, F: Field + Copy, M: Monomial<F, W>, const W: usize> PolyCursor<'a, F, M, W> {
     /// Current term `(coeff, &monomial)`, or `None` if exhausted.
     #[inline]
     pub fn term(&self) -> Option<(F, &'a M)> {
@@ -1017,7 +1017,7 @@ impl<'a, F: Field + Copy, M: Monomial<F>> PolyCursor<'a, F, M> {
     }
 }
 
-impl<F: Field + Copy, M: Monomial<F>> PartialEq for Poly<F, M> {
+impl<F: Field + Copy, M: Monomial<F, W>, const W: usize> PartialEq for Poly<F, M, W> {
     fn eq(&self, other: &Self) -> bool {
         // Same length + same terms in order. We compare through
         // cursors so the comparison stays O(n) (no materialised
@@ -1040,7 +1040,7 @@ impl<F: Field + Copy, M: Monomial<F>> PartialEq for Poly<F, M> {
         a.is_none() && b.is_none()
     }
 }
-impl<F: Field + Copy, M: Monomial<F>> Eq for Poly<F, M> {}
+impl<F: Field + Copy, M: Monomial<F, W>, const W: usize> Eq for Poly<F, M, W> {}
 
 /// Destructive merge: walk both chains, splicing input nodes
 /// directly into the output chain rather than allocating fresh
@@ -1051,12 +1051,12 @@ impl<F: Field + Copy, M: Monomial<F>> Eq for Poly<F, M> {}
 /// coefficients.
 ///
 /// Both inputs must be nonempty (callers guard zero operands).
-fn merge_consuming<F: Field + Copy, M: Monomial<F>>(
-    _ring: &Ring<F>,
-    a: Poly<F, M>,
-    b: Poly<F, M>,
+fn merge_consuming<F: Field + Copy, M: Monomial<F, W>, const W: usize>(
+    _ring: &Ring<F, W>,
+    a: Poly<F, M, W>,
+    b: Poly<F, M, W>,
     subtract: bool,
-) -> Poly<F, M> {
+) -> Poly<F, M, W> {
     debug_assert!(!a.is_zero());
     debug_assert!(!b.is_zero());
 
@@ -1191,12 +1191,12 @@ fn merge_consuming<F: Field + Copy, M: Monomial<F>>(
 /// operand's coefficients are negated. Allocates fresh nodes for
 /// every output term (list-splice node reuse is a future
 /// optimisation).
-fn merge<F: Field + Copy, M: Monomial<F>>(
-    _ring: &Ring<F>,
-    a: &Poly<F, M>,
-    b: &Poly<F, M>,
+fn merge<F: Field + Copy, M: Monomial<F, W>, const W: usize>(
+    _ring: &Ring<F, W>,
+    a: &Poly<F, M, W>,
+    b: &Poly<F, M, W>,
     subtract: bool,
-) -> Poly<F, M> {
+) -> Poly<F, M, W> {
     let mut out_head: Option<NonNull<Node<F, M>>> = None;
     let mut tail: *mut Option<NonNull<Node<F, M>>> = &mut out_head;
     let mut out_len: usize = 0;
@@ -1313,7 +1313,7 @@ mod tests {
 
     #[test]
     fn zero_is_zero() {
-        let p = Poly::<F>::zero();
+        let p = Poly::<F, GrevLexTerm>::zero();
         assert!(p.is_zero());
         assert_eq!(p.len(), 0);
         assert!(p.leading().is_none());
@@ -1623,17 +1623,17 @@ mod tests {
                 (F::from(4u64), mono(&r, &[1, 1])),
             ],
         );
-        let z = Poly::<F>::zero();
+        let z = Poly::<F, GrevLexTerm>::zero();
         // f + 0 = f.
         let got = f.clone().add_consuming(z.clone(), &r);
         got.assert_canonical(&r);
         assert_eq!(got, f);
         // 0 + f = f.
-        let got = Poly::<F>::zero().add_consuming(f.clone(), &r);
+        let got = Poly::<F, GrevLexTerm>::zero().add_consuming(f.clone(), &r);
         got.assert_canonical(&r);
         assert_eq!(got, f);
         // 0 + 0 = 0.
-        let got = Poly::<F>::zero().add_consuming(Poly::<F>::zero(), &r);
+        let got = Poly::<F, GrevLexTerm>::zero().add_consuming(Poly::<F, GrevLexTerm>::zero(), &r);
         assert!(got.is_zero());
     }
 
@@ -1776,7 +1776,7 @@ mod tests {
                 (F::from(4u64), mono(&r, &[1, 1])),
             ],
         );
-        let q = Poly::<F>::zero();
+        let q = Poly::<F, GrevLexTerm>::zero();
         let m = mono(&r, &[0, 1]);
         let got = p
             .clone()
@@ -1798,8 +1798,8 @@ mod tests {
         );
         let m = mono(&r, &[1, 0]);
         let c: F = F::from(2u64);
-        let expected = Poly::<F>::zero().sub_mul_term(c, &m, &q, &r);
-        let got = Poly::<F>::zero().sub_mm_mult_qq_consuming(c, &m, &q, &r);
+        let expected = Poly::<F, GrevLexTerm>::zero().sub_mul_term(c, &m, &q, &r);
+        let got = Poly::<F, GrevLexTerm>::zero().sub_mm_mult_qq_consuming(c, &m, &q, &r);
         got.assert_canonical(&r);
         assert_eq!(got, expected);
     }

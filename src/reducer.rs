@@ -922,7 +922,7 @@ mod tests {
     /// Reference reduction using Poly::sub_mul_term in a loop.
     /// Equivalent to the heap reducer but algorithmically distinct;
     /// used as the property-test oracle.
-    fn reference_reduce(ring: &Ring<Fr>, f: Poly<Fr>, basis: &[Poly<Fr>]) -> Poly<Fr> {
+    fn reference_reduce(ring: &Ring<Fr>, f: Poly<Fr, GrevLexTerm>, basis: &[Poly<Fr, GrevLexTerm>]) -> Poly<Fr, GrevLexTerm> {
         let mut current = f;
         loop {
             if current.is_zero() {
@@ -982,10 +982,10 @@ mod tests {
     /// using the same first-divisor-found policy as the reference.
     fn heap_reduce<'a>(
         ring: Arc<Ring<Fr>>,
-        f: &'a Poly<Fr>,
-        basis: &'a [Poly<Fr>],
+        f: &'a Poly<Fr, GrevLexTerm>,
+        basis: &'a [Poly<Fr, GrevLexTerm>],
         sugars: &[u32],
-    ) -> Poly<Fr> {
+    ) -> Poly<Fr, GrevLexTerm> {
         let mut h = ReducerHeap::<Fr, GrevLexTerm>::new(Arc::clone(&ring), f.lm_deg());
         let one = MonoTerm::one(&ring);
         h.push_reducer(Reducer {
@@ -995,7 +995,7 @@ mod tests {
             cursor: f.cursor(),
             sugar: f.lm_deg(),
         });
-        let basis_owned: Vec<&Poly<Fr>> = basis.iter().collect();
+        let basis_owned: Vec<&Poly<Fr, GrevLexTerm>> = basis.iter().collect();
         let (out, _sugar) = h.reduce_to_normal_form(|leader| {
             for (idx, g) in basis_owned.iter().enumerate() {
                 if g.is_zero() {
@@ -1023,7 +1023,7 @@ mod tests {
                 (Fr::from(2u64), mono(&r, &[0, 0, 1])),
             ],
         );
-        let basis: Vec<Poly<Fr>> = vec![]; // empty basis
+        let basis: Vec<Poly<Fr, GrevLexTerm>> = vec![]; // empty basis
         let got = heap_reduce(Arc::clone(&r), &f, &basis, &[]);
         assert_eq!(got, f);
     }
@@ -1153,7 +1153,7 @@ mod tests {
         ];
 
         for (basis_terms, f_terms) in cases {
-            let basis: Vec<Poly<Fr>> = basis_terms
+            let basis: Vec<Poly<Fr, GrevLexTerm>> = basis_terms
                 .into_iter()
                 .map(|terms| {
                     Poly::from_terms(

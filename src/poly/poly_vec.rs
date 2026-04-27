@@ -39,7 +39,7 @@ use std::marker::PhantomData;
 /// (`coeffs()`, `terms()`, `iter()`, `leading()`, `len()`,
 /// `is_zero()`) operate on the live region.
 #[derive(Debug)]
-pub struct Poly<F: Field + Copy, M: Monomial<F> = crate::monomial::GrevLexTerm> {
+pub struct Poly<F: Field + Copy, M: Monomial<F, W>, const W: usize = 4> {
     /// Coefficients in the same order as `terms`. All nonzero.
     coeffs: Vec<F>,
     /// Monomials in strictly descending order.
@@ -59,7 +59,7 @@ pub struct Poly<F: Field + Copy, M: Monomial<F> = crate::monomial::GrevLexTerm> 
     lm_deg: u32,
 }
 
-impl<F: Field + Copy, M: Monomial<F>> Clone for Poly<F, M> {
+impl<F: Field + Copy, M: Monomial<F, W>, const W: usize> Clone for Poly<F, M, W> {
     /// Clone only the live tail (`coeffs[head..]` / `terms[head..]`)
     /// so the dead prefix is dropped at every clone site. This keeps
     /// the bucket-slot reuse pattern (drop_leading repeatedly, then
@@ -81,7 +81,7 @@ impl<F: Field + Copy, M: Monomial<F>> Clone for Poly<F, M> {
     }
 }
 
-impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
+impl<F: Field + Copy, M: Monomial<F, W>, const W: usize> Poly<F, M, W> {
     // ----- Constructors -----
 
     /// The zero polynomial.
@@ -99,7 +99,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
 
     /// A polynomial with a single term `c * m`. Returns the zero
     /// polynomial if `c.is_zero()`.
-    pub fn monomial(_ring: &Ring<F>, c: F, m: M) -> Self {
+    pub fn monomial(_ring: &Ring<F, W>, c: F, m: M) -> Self {
         if c.is_zero() {
             return Self::zero();
         }
@@ -131,7 +131,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     /// * `terms` is strictly descending under the ring's ordering.
     /// * No monomial appears twice.
     /// * Every coefficient is nonzero.
-    pub fn from_descending_terms_unchecked(_ring: &Ring<F>, terms: Vec<(F, M)>) -> Self {
+    pub fn from_descending_terms_unchecked(_ring: &Ring<F, W>, terms: Vec<(F, M)>) -> Self {
         if terms.is_empty() {
             return Self::zero();
         }
@@ -171,7 +171,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     /// is cheaper than pushing `(F, MonoTerm)` tuples one at a
     /// time into a single vec.
     pub fn from_descending_parallel_unchecked(
-        ring: &Ring<F>,
+        ring: &Ring<F, W>,
         coeffs: Vec<F>,
         terms: Vec<M>,
     ) -> Self {
@@ -206,7 +206,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     /// pairs. Duplicates are summed, zeros are dropped, the result is
     /// sorted into descending order. Primarily for tests and round-trip
     /// from textual input.
-    pub fn from_terms(_ring: &Ring<F>, terms: Vec<(F, M)>) -> Self {
+    pub fn from_terms(_ring: &Ring<F, W>, terms: Vec<(F, M)>) -> Self {
         // Sort descending by monomial.
         let mut terms = terms;
         terms.sort_by_key(|b| std::cmp::Reverse(b.1));
@@ -345,7 +345,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     /// underlying storage plus its position; the reducer stores one
     /// per in-flight reducer.
     #[inline]
-    pub fn cursor(&self) -> PolyCursor<'_, F, M> {
+    pub fn cursor(&self) -> PolyCursor<'_, F, M, W> {
         PolyCursor {
             poly: self,
             idx: self.head,
@@ -400,7 +400,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     // ----- Arithmetic -----
 
     /// In-place: `self = self + other`. Linear merge by monomial order.
-    pub fn add_assign(&mut self, other: &Poly<F, M>, ring: &Ring<F>) {
+    pub fn add_assign(&mut self, other: &Poly<F, M, W>, ring: &Ring<F, W>) {
         if other.is_zero() {
             return;
         }
@@ -414,7 +414,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     /// Out-of-place addition. `other` may alias self (Rust borrow rules
     /// prevent true aliasing at the type level, but we accept any two
     /// references including `&a, &a`).
-    pub fn add(&self, other: &Poly<F, M>, ring: &Ring<F>) -> Poly<F, M> {
+    pub fn add(&self, other: &Poly<F, M, W>, ring: &Ring<F, W>) -> Poly<F, M, W> {
         if other.is_zero() {
             return self.clone();
         }
@@ -432,12 +432,12 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     /// on the List backend (ADR-015) this variant splices input nodes
     /// directly into the output chain. See `p_Add_q` in
     /// `~/Singular/libpolys/polys/templates/p_Add_q__T.cc`.
-    pub fn add_consuming(self, other: Poly<F, M>, ring: &Ring<F>) -> Poly<F, M> {
+    pub fn add_consuming(self, other: Poly<F, M, W>, ring: &Ring<F, W>) -> Poly<F, M, W> {
         self.add(&other, ring)
     }
 
     /// Out-of-place subtraction.
-    pub fn sub(&self, other: &Poly<F, M>, ring: &Ring<F>) -> Poly<F, M> {
+    pub fn sub(&self, other: &Poly<F, M, W>, ring: &Ring<F, W>) -> Poly<F, M, W> {
         if other.is_zero() {
             return self.clone();
         }
@@ -448,7 +448,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     }
 
     /// Negation (flip every coefficient).
-    pub fn neg(&self, _ring: &Ring<F>) -> Poly<F, M> {
+    pub fn neg(&self, _ring: &Ring<F, W>) -> Poly<F, M, W> {
         let coeffs: Vec<F> = self.coeffs[self.head..].iter().map(|&c| -c).collect();
         let mut out = Self {
             coeffs,
@@ -464,7 +464,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     }
 
     /// Multiply every coefficient by a scalar. Returns zero if `c.is_zero()`.
-    pub fn scale(&self, c: F, _ring: &Ring<F>) -> Poly<F, M> {
+    pub fn scale(&self, c: F, _ring: &Ring<F, W>) -> Poly<F, M, W> {
         if c.is_zero() || self.is_zero() {
             return Self::zero();
         }
@@ -485,7 +485,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     /// Multiply every monomial by `m` (no scalar scaling). Per ADR-018,
     /// the caller's ring construction must ensure no product overflows
     /// the 7-bit per-variable budget; release builds do not check.
-    pub fn shift(&self, m: &M, ring: &Ring<F>) -> Poly<F, M> {
+    pub fn shift(&self, m: &M, ring: &Ring<F, W>) -> Poly<F, M, W> {
         if self.is_zero() {
             return Self::zero();
         }
@@ -512,7 +512,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     /// merge-based accumulator; fine for tests. A heap-based Johnson
     /// multiplication is future work. Per ADR-018, the caller must
     /// ensure no product overflows.
-    pub fn mul(&self, other: &Poly<F, M>, ring: &Ring<F>) -> Poly<F, M> {
+    pub fn mul(&self, other: &Poly<F, M, W>, ring: &Ring<F, W>) -> Poly<F, M, W> {
         if self.is_zero() || other.is_zero() {
             return Self::zero();
         }
@@ -539,7 +539,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     ///
     /// Per ADR-018, the caller's ring construction must ensure every
     /// `m * q[i]` product stays in-range; release builds do not check.
-    pub fn sub_mul_term(&self, c: F, m: &M, q: &Poly<F, M>, ring: &Ring<F>) -> Poly<F, M> {
+    pub fn sub_mul_term(&self, c: F, m: &M, q: &Poly<F, M, W>, ring: &Ring<F, W>) -> Poly<F, M, W> {
         if c.is_zero() || q.is_zero() {
             return self.clone();
         }
@@ -626,16 +626,16 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
         self,
         c: F,
         m: &M,
-        q: &Poly<F, M>,
-        ring: &Ring<F>,
-    ) -> Poly<F, M> {
+        q: &Poly<F, M, W>,
+        ring: &Ring<F, W>,
+    ) -> Poly<F, M, W> {
         self.sub_mul_term(c, m, q, ring)
     }
 
     /// Return a scalar multiple that makes the leading coefficient 1.
     /// Zero is returned unchanged. Requires a nonzero leading coefficient
     /// that's invertible (always true over a prime field for nonzero lc).
-    pub fn monic(&self, ring: &Ring<F>) -> Option<Poly<F, M>> {
+    pub fn monic(&self, ring: &Ring<F, W>) -> Option<Poly<F, M, W>> {
         if self.is_zero() {
             return Some(Self::zero());
         }
@@ -650,7 +650,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     // ----- Invariants -----
 
     /// Panic if any internal invariant is violated.
-    pub fn assert_canonical(&self, ring: &Ring<F>) {
+    pub fn assert_canonical(&self, ring: &Ring<F, W>) {
         assert_eq!(self.coeffs.len(), self.terms.len(), "length mismatch");
         assert!(
             self.head <= self.terms.len(),
@@ -687,7 +687,7 @@ impl<F: Field + Copy, M: Monomial<F>> Poly<F, M> {
     }
 }
 
-impl<F: Field + Copy, M: Monomial<F>> Default for Poly<F, M> {
+impl<F: Field + Copy, M: Monomial<F, W>, const W: usize> Default for Poly<F, M, W> {
     fn default() -> Self {
         Self::zero()
     }
@@ -708,14 +708,14 @@ impl<F: Field + Copy, M: Monomial<F>> Default for Poly<F, M> {
 /// [`advance`](Self::advance) steps one term forward, and
 /// [`is_done`](Self::is_done) reports exhaustion.
 #[derive(Clone, Copy, Debug)]
-pub struct PolyCursor<'a, F: Field + Copy, M: Monomial<F> = crate::monomial::GrevLexTerm> {
-    poly: &'a Poly<F, M>,
+pub struct PolyCursor<'a, F: Field + Copy, M: Monomial<F, W>, const W: usize = 4> {
+    poly: &'a Poly<F, M, W>,
     /// Index into the parallel-array storage. Always in `[head, terms.len()]`;
     /// equality with `terms.len()` means exhausted.
     idx: usize,
 }
 
-impl<'a, F: Field + Copy, M: Monomial<F>> PolyCursor<'a, F, M> {
+impl<'a, F: Field + Copy, M: Monomial<F, W>, const W: usize> PolyCursor<'a, F, M, W> {
     /// Current term `(coeff, &monomial)`, or `None` if exhausted.
     #[inline]
     pub fn term(&self) -> Option<(F, &'a M)> {
@@ -741,14 +741,14 @@ impl<'a, F: Field + Copy, M: Monomial<F>> PolyCursor<'a, F, M> {
     }
 }
 
-impl<F: Field + Copy, M: Monomial<F>> PartialEq for Poly<F, M> {
+impl<F: Field + Copy, M: Monomial<F, W>, const W: usize> PartialEq for Poly<F, M, W> {
     fn eq(&self, other: &Self) -> bool {
         // Compare the live regions only — `head` may differ between
         // two algebraically equal polys depending on their drop history.
         self.live_coeffs() == other.live_coeffs() && self.live_terms() == other.live_terms()
     }
 }
-impl<F: Field + Copy, M: Monomial<F>> Eq for Poly<F, M> {}
+impl<F: Field + Copy, M: Monomial<F, W>, const W: usize> Eq for Poly<F, M, W> {}
 
 /// Merge two sorted polynomials into one. If `subtract` is true, the
 /// second operand's coefficients are negated.
@@ -761,12 +761,12 @@ impl<F: Field + Copy, M: Monomial<F>> Eq for Poly<F, M> {}
 /// unconditionally and the cursor is incremented only when the
 /// resulting coefficient is nonzero. This mirrors FLINT's
 /// `_nmod_mpoly_add` (`~/flint/src/nmod_mpoly/add.c:16-124`).
-fn merge<F: Field + Copy, M: crate::monomial::Monomial<F>>(
-    _ring: &Ring<F>,
-    a: &Poly<F, M>,
-    b: &Poly<F, M>,
+fn merge<F: Field + Copy, M: crate::monomial::Monomial<F, W>, const W: usize>(
+    _ring: &Ring<F, W>,
+    a: &Poly<F, M, W>,
+    b: &Poly<F, M, W>,
     subtract: bool,
-) -> Poly<F, M> {
+) -> Poly<F, M, W> {
     let a_c = a.live_coeffs();
     let a_m = a.live_terms();
     let b_c = b.live_coeffs();
@@ -871,7 +871,7 @@ mod tests {
 
     #[test]
     fn zero_is_zero() {
-        let p = Poly::<Fr>::zero();
+        let p = Poly::<Fr, GrevLexTerm>::zero();
         assert!(p.is_zero());
         assert_eq!(p.len(), 0);
         assert!(p.leading().is_none());
@@ -1008,7 +1008,7 @@ mod tests {
     fn drop_leading_edge_cases() {
         let r = mk_ring(2);
         // Zero in, zero out.
-        let z = Poly::<Fr>::zero();
+        let z = Poly::<Fr, GrevLexTerm>::zero();
         let z_tail = z.drop_leading();
         assert!(z_tail.is_zero());
         z_tail.assert_canonical(&r);
