@@ -79,6 +79,28 @@ pub trait Monomial<F: Field + Copy + Send + Sync, const W: usize = 4>:
     fn raw_total_deg(&self) -> u32 {
         self.as_mono_term().total_deg()
     }
+
+    /// Heap-comparison key for the Monagan-Pearce reducer.
+    ///
+    /// Returns `(prefix, key)`; the heap lex-compares `prefix`
+    /// first, then `key` MSB-word first. The contract is:
+    ///
+    /// > `lex_compare(M::cmp_key(a, ring), M::cmp_key(b, ring))`
+    /// > `==`
+    /// > `M::cmp(M::from(a), M::from(b))`
+    ///
+    /// for any two `MonoTerm<W>` `a`, `b` over `ring`.
+    ///
+    /// Default impl: pure DegRevLex via the XOR-flip-mask trick
+    /// (matches `MonoTerm::cmp_degrevlex_packed`). `prefix = 0`.
+    /// Orders that prepend a block (e.g., elimination orders) must
+    /// override this method to put the block metric in `prefix`.
+    #[inline]
+    fn cmp_key(packed: &MonoTerm<W>, ring: &Ring<F, W>) -> (u64, [u64; W]) {
+        let mask = ring.cmp_flip_mask();
+        let key: [u64; W] = std::array::from_fn(|i| packed.packed()[i] ^ mask[i]);
+        (0, key)
+    }
 }
 
 /// Packed-exponent monomial. See module documentation for layout.
@@ -617,6 +639,32 @@ impl<F: Field + Copy + Send + Sync, const W: usize> Monomial<F, W> for OddElimTe
     fn as_mono_term(&self) -> &MonoTerm<W> {
         &self.0
     }
+
+    /// Heap key for the elimination order: the block-sum (sum of
+    /// exponents at odd-indexed variables) is packed into `prefix`,
+    /// and the existing DegRevLex flip-masked key forms the tail.
+    ///
+    /// This matches `OddElimTerm::cmp` (which is
+    /// `cmp_elim_packed(|i| i % 2 == 1)`): block-sum first, then
+    /// DegRevLex tiebreak.
+    ///
+    /// Capacity check: each exponent is 7 bits, the block has at
+    /// most `nvars / 2 < W*4` variables, so the sum is bounded by
+    /// `127 * W*4`. For all `W <= 2^53 / (127*4) ≈ 2^44`, the sum
+    /// fits in a `u64` with room to spare.
+    #[inline]
+    fn cmp_key(packed: &MonoTerm<W>, ring: &Ring<F, W>) -> (u64, [u64; W]) {
+        let nvars = ring.nvars() as usize;
+        let mut block_sum: u64 = 0;
+        let mut i = 1;
+        while i < nvars {
+            block_sum += packed.exponent_raw(nvars, i) as u64;
+            i += 2;
+        }
+        let mask = ring.cmp_flip_mask();
+        let tail: [u64; W] = std::array::from_fn(|i| packed.packed()[i] ^ mask[i]);
+        (block_sum, tail)
+    }
 }
 
 // ----- packing helpers -----
@@ -645,6 +693,76 @@ mod tests {
 
     fn mk_ring(nvars: u32) -> Ring<Fr> {
         Ring::<Fr>::new(nvars).unwrap()
+    }
+
+    /// Property: lex compare on `(pre_key, cmp_key)` returned by
+    /// `M::cmp_key` must agree with `M::cmp` on the underlying
+    /// `MonoTerm` values. This is the contract the heap reducer
+    /// relies on.
+    fn prop_cmp_key_lex_matches_m_cmp<M>(nvars: u32)
+    where
+        M: Monomial<Fr, 4> + From<MonoTerm<4>>,
+    {
+        let ring = mk_ring(nvars);
+        // Deterministic LCG to generate exponent vectors.
+        let mut s: u64 = 0x9E3779B97F4A7C15;
+        let mut step = || {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s
+        };
+        let n = nvars as usize;
+        let mut samples: Vec<MonoTerm<4>> = Vec::with_capacity(64);
+        while samples.len() < 64 {
+            let exps: Vec<u32> = (0..n).map(|_| (step() % 6) as u32).collect();
+            if let Some(m) = MonoTerm::from_exponents(&ring, &exps) {
+                samples.push(m);
+            }
+        }
+
+        for a in &samples {
+            for b in &samples {
+                let m_cmp = M::from(*a).cmp(&M::from(*b));
+                let (pa, ka) = M::cmp_key(a, &ring);
+                let (pb, kb) = M::cmp_key(b, &ring);
+                let lex = match pa.cmp(&pb) {
+                    Ordering::Equal => {
+                        let mut o = Ordering::Equal;
+                        for i in (0..4).rev() {
+                            match ka[i].cmp(&kb[i]) {
+                                Ordering::Equal => continue,
+                                ord => {
+                                    o = ord;
+                                    break;
+                                }
+                            }
+                        }
+                        o
+                    }
+                    ord => ord,
+                };
+                assert_eq!(
+                    lex,
+                    m_cmp,
+                    "cmp_key lex disagrees with M::cmp at a={:?} b={:?}",
+                    a.exponents(&ring),
+                    b.exponents(&ring),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cmp_key_matches_grevlex() {
+        for nvars in [1u32, 2, 5, 10, 31] {
+            prop_cmp_key_lex_matches_m_cmp::<GrevLexTerm>(nvars);
+        }
+    }
+
+    #[test]
+    fn cmp_key_matches_oddelim() {
+        for nvars in [1u32, 2, 5, 10, 31] {
+            prop_cmp_key_lex_matches_m_cmp::<OddElimTerm>(nvars);
+        }
     }
 
     #[test]
