@@ -40,13 +40,13 @@ pub struct PairKey(pub u64);
 /// itself is built by [`LObject::from_spoly`](crate::lobject::LObject::from_spoly)
 /// using this data.
 #[derive(Clone, Debug)]
-pub struct Pair {
+pub struct Pair<const W: usize = 4> {
     /// Smaller basis index. `i < j` by construction.
     pub i: u32,
     /// Larger basis index.
     pub j: u32,
     /// LCM of `lm(S[i])` and `lm(S[j])`.
-    pub lcm: MonoTerm,
+    pub lcm: MonoTerm<W>,
     /// Cached `lcm.sev()` — pre-computed so the chain criterion's
     /// sev pre-filter is a direct u64 load.
     pub lcm_sev: u64,
@@ -65,7 +65,7 @@ pub struct Pair {
     pub key: PairKey,
 }
 
-impl Pair {
+impl<const W: usize> Pair<W> {
     /// Build a fresh pair. `i < j` is a precondition; the constructor
     /// swaps them if the caller gave them in the wrong order so that
     /// downstream code can rely on `i < j`.
@@ -77,7 +77,7 @@ impl Pair {
     /// overwritten by [`LSet::insert`](crate::lset::LSet::insert);
     /// callers that never hand the pair to an `LSet` may read a stale
     /// key, which is harmless.
-    pub fn new(i: u32, j: u32, lcm: MonoTerm, sugar: u32, arrival: u64) -> Self {
+    pub fn new(i: u32, j: u32, lcm: MonoTerm<W>, sugar: u32, arrival: u64) -> Self {
         let (i, j) = if i < j { (i, j) } else { (j, i) };
         debug_assert!(i != j, "degenerate pair with i == j");
         let lcm_sev = lcm.sev();
@@ -95,7 +95,7 @@ impl Pair {
     /// Debug-only invariant check.
     pub fn assert_canonical<F: ark_ff::Field + Copy + Send + Sync>(
         &self,
-        ring: &crate::ring::Ring<F>,
+        ring: &crate::ring::Ring<F, W>,
     ) {
         assert!(self.i < self.j, "pair indices not ordered");
         self.lcm.assert_canonical(ring);
@@ -105,7 +105,7 @@ impl Pair {
 
 // Ordering: ascending on (sugar, arrival, i, j). Wrap in `Reverse`
 // when using `BinaryHeap` so the smallest comes out first.
-impl Ord for Pair {
+impl<const W: usize> Ord for Pair<W> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.sugar
             .cmp(&other.sugar)
@@ -114,17 +114,17 @@ impl Ord for Pair {
             .then_with(|| self.j.cmp(&other.j))
     }
 }
-impl PartialOrd for Pair {
+impl<const W: usize> PartialOrd for Pair<W> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
-impl PartialEq for Pair {
+impl<const W: usize> PartialEq for Pair<W> {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
-impl Eq for Pair {}
+impl<const W: usize> Eq for Pair<W> {}
 
 #[cfg(test)]
 mod tests {
