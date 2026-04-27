@@ -64,9 +64,11 @@ pub fn enter_one_pair_normal<F: Field + Copy + Send + Sync, M: Monomial<F, W> + 
     // sev is a bloom filter of nonzero exponents: `a_sev & b_sev ==
     // 0` implies no variable is shared, so coprime. The converse
     // (sev collision but actually coprime) is possible once variable
-    // count exceeds 64 (sev wraps modulo 64). For MAX_VARS = 31 the
-    // sev check alone is exact; we keep the explicit coprime check
-    // after it so the code remains correct if MAX_VARS grows.
+    // count exceeds 64 (sev wraps modulo 64). At default W=4 the
+    // cap is `max_vars::<W>() = 31` so the sev check alone is exact;
+    // for W >= 9 (`max_vars::<W>() = W*8 - 1 >= 71`) the wrap is
+    // reachable, so the explicit coprime check after this fast path
+    // is load-bearing — keep it.
     if (h_lm_sev & s_lm_sev) == 0 {
         return None;
     }

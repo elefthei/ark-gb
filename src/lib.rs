@@ -14,7 +14,11 @@
 //! * **Field:** Z/p with `2 ≤ p < 2^31`, Barrett-reduced modular mul.
 //! * **Ordering:** `DegRevLex` only.
 //! * **Exponent width:** 8 bits per variable, up to
-//!   [`MAX_VARS`](ring::MAX_VARS) variables.
+//!   [`MAX_VARS`](ring::MAX_VARS) variables. `MAX_VARS = 31` is the
+//!   default-`W=4` alias for [`max_vars::<W>()`](ring::max_vars).
+//!   Instantiate `Ring::<F, 8>` for up to 63 variables, or
+//!   `Ring::<F, 16>` for up to 127, by threading the second const
+//!   generic through `Poly`/`SBasis`/`compute_gb` etc.
 //! * **Polynomial:** parallel `Vec<F>` / `Vec<MonoTerm>` with
 //!   cached leading-term metadata.
 //!
@@ -73,6 +77,16 @@ const _: fn() = || {
     assert_send_sync::<SBasis<Fr, GrevLexTerm>>();
     assert_send_sync::<LSet>();
     assert_send_sync::<BSet>();
+
+    // Same checks at W=8 (cap = 63 vars). Catches any Send/Sync
+    // bound that accidentally hard-codes W=4.
+    assert_send_sync::<Ring<Fr, 8>>();
+    assert_send_sync::<MonoTerm<8>>();
+    assert_send_sync::<Poly<Fr, GrevLexTerm<8>, 8>>();
+    assert_send_sync::<Pair<8>>();
+    assert_send_sync::<SBasis<Fr, GrevLexTerm<8>, 8>>();
+    assert_send_sync::<LSet<8>>();
+    assert_send_sync::<BSet<8>>();
 };
 
 // KBucket and LObject are Send but deliberately not Sync
@@ -84,4 +98,6 @@ const _: fn() = || {
     fn assert_send<T: Send>() {}
     assert_send::<KBucket<Fr, GrevLexTerm>>();
     assert_send::<LObject<Fr, GrevLexTerm>>();
+    assert_send::<KBucket<Fr, GrevLexTerm<8>, 8>>();
+    assert_send::<LObject<Fr, GrevLexTerm<8>, 8>>();
 };
