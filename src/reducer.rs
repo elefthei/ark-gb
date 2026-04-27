@@ -57,13 +57,13 @@ use std::sync::Arc;
 /// lifetime `'a` ties the heap to the borrow of that basis for
 /// the duration of one reduction.
 #[derive(Debug)]
-pub struct Reducer<'a, F: Field + Copy, M: Monomial<F>> {
+pub struct Reducer<'a, F: Field + Copy, M: Monomial<F, W>, const W: usize = 4> {
     /// Source polynomial `g_i`. Borrowed from the basis for
     /// the reduction's lifetime.
-    pub poly: &'a Poly<F, M>,
+    pub poly: &'a Poly<F, M, W>,
     /// Multiplier monomial `m_i = lm(LObject) / lm(g_i)` at the
     /// time this reducer was added.
-    pub multiplier: MonoTerm,
+    pub multiplier: MonoTerm<W>,
     /// Pre-negated multiplier coefficient
     /// `c_i = -leader_coeff(LObject) / lc(g_i)`. With monic
     /// basis elements `lc(g_i) == 1`, this simplifies to
@@ -80,7 +80,7 @@ pub struct Reducer<'a, F: Field + Copy, M: Monomial<F>> {
     /// Using a cursor instead of a random-access index makes the
     /// reducer oblivious to `Poly`'s backing storage (parallel
     /// vectors vs. linked list).
-    pub cursor: PolyCursor<'a, F, M>,
+    pub cursor: PolyCursor<'a, F, M, W>,
     /// Sugar contribution: `g_i.lm_deg() + multiplier.total_deg()`.
     /// Used to compute the LObject's running sugar as the
     /// max over all in-flight reducers (plus the initial sugar).
@@ -106,35 +106,35 @@ pub struct Reducer<'a, F: Field + Copy, M: Monomial<F>> {
 /// advance the source's `index` and push the next term back,
 /// or the source has been exhausted and no new node is pushed.
 #[derive(Debug, Clone)]
-pub struct HeapNode {
+pub struct HeapNode<const W: usize = 4> {
     /// Packed monomial XOR'd against `ring.cmp_flip_mask`.
     /// See module docs for the `[u64; 4]` lex-compare convention.
-    pub cmp_key: [u64; 4],
+    pub cmp_key: [u64; W],
     /// Index into the slab of [`Reducer`]s.
     pub reducer_idx: usize,
 }
 
-impl PartialEq for HeapNode {
+impl<const W: usize> PartialEq for HeapNode<W> {
     fn eq(&self, other: &Self) -> bool {
         self.cmp_key == other.cmp_key
     }
 }
 
-impl Eq for HeapNode {}
+impl<const W: usize> Eq for HeapNode<W> {}
 
-impl PartialOrd for HeapNode {
+impl<const W: usize> PartialOrd for HeapNode<W> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for HeapNode {
+impl<const W: usize> Ord for HeapNode<W> {
     /// Lex compare on the cached `cmp_key`, MSB-word first.
     /// Result is the degrevlex order on the underlying monomials
     /// (because `cmp_key` was constructed with the ring's
     /// `cmp_flip_mask` applied — see `MonoTerm::cmp_degrevlex`).
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        for i in (0..4).rev() {
+        for i in (0..W).rev() {
             match self.cmp_key[i].cmp(&other.cmp_key[i]) {
                 std::cmp::Ordering::Equal => {}
                 ord => return ord,
@@ -155,32 +155,32 @@ impl Ord for HeapNode {
 /// Lifetime `'a` ties this state to the borrow of the
 /// [`SBasis`] whose polynomials the [`Reducer`]s reference.
 #[derive(Debug)]
-pub struct ReducerHeap<'a, F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>> {
+pub struct ReducerHeap<'a, F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize = 4> {
     /// Owning ring reference. All monomials in the heap belong
     /// to this ring.
-    ring: Arc<Ring<F>>,
+    ring: Arc<Ring<F, W>>,
     /// Slab of in-flight reducers. Indexed by [`HeapNode::reducer_idx`].
     /// Grows monotonically — a reducer is never removed from the
     /// slab once added (its tail may be exhausted, in which case
     /// no `HeapNode` references it any more, but its slot stays).
-    reducers: Vec<Reducer<'a, F, M>>,
+    reducers: Vec<Reducer<'a, F, M, W>>,
     /// Max-heap of pending product terms, ordered by degrevlex
     /// via [`HeapNode::cmp_key`]. The std-library `BinaryHeap` is
     /// a max-heap and our [`HeapNode::cmp`] implements degrevlex
     /// via lex compare on the cached `cmp_key`, so push/pop/peek
     /// give the right semantics directly.
-    heap: BinaryHeap<HeapNode>,
+    heap: BinaryHeap<HeapNode<W>>,
     /// Running sugar. Initialised at construction; updated to
     /// `max(self.sugar, reducer.sugar)` on each `push_reducer`.
     sugar: u32,
 }
 
-impl<'a, F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>> ReducerHeap<'a, F, M> {
+impl<'a, F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize> ReducerHeap<'a, F, M, W> {
     /// Construct an empty reducer state for a reduction starting
     /// at `initial_sugar`. Adding the LObject's polynomial as the
     /// first reducer (with `multiplier = 1`, `coeff = 1`) is the
     /// caller's responsibility (deferred to phase 4).
-    pub fn new(ring: Arc<Ring<F>>, initial_sugar: u32) -> Self {
+    pub fn new(ring: Arc<Ring<F, W>>, initial_sugar: u32) -> Self {
         Self {
             ring,
             reducers: Vec::new(),
@@ -191,7 +191,7 @@ impl<'a, F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>> Reducer
 
     /// Borrow the ring this heap operates over.
     #[inline]
-    pub fn ring(&self) -> &Arc<Ring<F>> {
+    pub fn ring(&self) -> &Arc<Ring<F, W>> {
         &self.ring
     }
 
@@ -240,7 +240,7 @@ impl<'a, F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>> Reducer
     /// (typically `Self::push_term`, deferred to phase 4 where the
     /// reducer-construction surface lands).
     #[inline]
-    pub fn push_node(&mut self, node: HeapNode) {
+    pub fn push_node(&mut self, node: HeapNode<W>) {
         self.heap.push(node);
     }
 
@@ -252,7 +252,7 @@ impl<'a, F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>> Reducer
     /// whether they share the leading `cmp_key` — the signal that
     /// terms cancel and need to be summed.
     #[inline]
-    pub fn peek_max(&self) -> Option<&HeapNode> {
+    pub fn peek_max(&self) -> Option<&HeapNode<W>> {
         self.heap.peek()
     }
 
@@ -265,7 +265,7 @@ impl<'a, F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>> Reducer
     /// the next term back onto the heap) or, if the source's
     /// tail is exhausted, leave the slot vacant.
     #[inline]
-    pub fn pop_max(&mut self) -> Option<HeapNode> {
+    pub fn pop_max(&mut self) -> Option<HeapNode<W>> {
         self.heap.pop()
     }
 
@@ -281,7 +281,7 @@ impl<'a, F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>> Reducer
     /// reducer" invariant: an exhausted reducer has zero in flight.
     ///
     /// Updates the running sugar to `max(self.sugar, reducer.sugar)`.
-    pub fn push_reducer(&mut self, reducer: Reducer<'a, F, M>) -> usize {
+    pub fn push_reducer(&mut self, reducer: Reducer<'a, F, M, W>) -> usize {
         let idx = self.reducers.len();
         self.sugar = self.sugar.max(reducer.sugar);
         self.reducers.push(reducer);
@@ -343,9 +343,9 @@ impl<'a, F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>> Reducer
     /// to zero. `final_sugar` is the running sugar after all
     /// reducers were added, useful for the caller to update the
     /// LObject's sugar metadata.
-    pub fn reduce_to_normal_form<DF>(mut self, mut find_divisor: DF) -> (Poly<F, M>, u32)
+    pub fn reduce_to_normal_form<DF>(mut self, mut find_divisor: DF) -> (Poly<F, M, W>, u32)
     where
-        DF: FnMut(&MonoTerm) -> Option<(&'a Poly<F, M>, u32)>,
+        DF: FnMut(&MonoTerm<W>) -> Option<(&'a Poly<F, M, W>, u32)>,
     {
         let mut survivor_terms: Vec<(F, M)> = Vec::new();
 
@@ -422,7 +422,7 @@ impl<'a, F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>> Reducer
     /// is advanced past its emitted term. If the resulting sum is
     /// zero, the chain cancelled and we recurse on the next leader;
     /// if non-zero, that's the leader the caller wants.
-    pub fn pop_with_cancellation(&mut self) -> Option<(F, MonoTerm)> {
+    pub fn pop_with_cancellation(&mut self) -> Option<(F, MonoTerm<W>)> {
         loop {
             let max_node = self.heap.pop()?;
             // Collect the contributing reducer indices and compute
