@@ -141,17 +141,9 @@ impl<const W: usize> Ord for HeapNode<W> {
     /// monomials (DegRevLex for `GrevLexTerm`; elim-block then
     /// DegRevLex for `OddElimTerm`).
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match self.pre_key.cmp(&other.pre_key) {
-            std::cmp::Ordering::Equal => {}
-            ord => return ord,
-        }
-        for i in (0..W).rev() {
-            match self.cmp_key[i].cmp(&other.cmp_key[i]) {
-                std::cmp::Ordering::Equal => {}
-                ord => return ord,
-            }
-        }
-        std::cmp::Ordering::Equal
+        self.pre_key
+            .cmp(&other.pre_key)
+            .then_with(|| self.cmp_key.iter().rev().cmp(other.cmp_key.iter().rev()))
     }
 }
 
@@ -1253,18 +1245,135 @@ mod tests {
         h.push_node(a.clone());
         h.push_node(c.clone());
         h.push_node(b.clone());
-        // Top two should both have cmp_key [9, 0, 0, 0].
         let p1 = h.pop_max().unwrap();
         assert_eq!(p1.cmp_key, [9, 0, 0, 0]);
         let p2 = h.pop_max().unwrap();
         assert_eq!(p2.cmp_key, [9, 0, 0, 0]);
-        // Reducer indices: should be {1, 2} between p1 and p2.
         let idxs = [p1.reducer_idx, p2.reducer_idx];
         assert!(idxs.contains(&1) && idxs.contains(&2));
-        // Last pop is c.
         let p3 = h.pop_max().unwrap();
         assert_eq!(p3.cmp_key, [5, 0, 0, 0]);
         assert_eq!(p3.reducer_idx, 3);
         assert!(h.heap_is_empty());
+    }
+
+    /// B2: same `cmp_key` but different `pre_key` must NOT be
+    /// equal. Pairs with `duplicate_cmp_keys_both_pop`: there
+    /// the chain check should *unify* (so cancellation can sum
+    /// coeffs); here it must *split* (different orbit blocks).
+    #[test]
+    fn pre_key_distinguishes_chains() {
+        let a = HeapNode::<4> {
+            pre_key: 7,
+            cmp_key: [1, 2, 3, 4],
+            reducer_idx: 0,
+        };
+        let b = HeapNode::<4> {
+            pre_key: 9,
+            cmp_key: [1, 2, 3, 4],
+            reducer_idx: 1,
+        };
+        assert_ne!(a, b);
+        assert!(b > a);
+        // pre_key dominates over cmp_key word 3.
+        let c = HeapNode::<4> {
+            pre_key: 1,
+            cmp_key: [0, 0, 0, u64::MAX],
+            reducer_idx: 2,
+        };
+        let d = HeapNode::<4> {
+            pre_key: 2,
+            cmp_key: [0, 0, 0, 0],
+            reducer_idx: 3,
+        };
+        assert!(d > c);
+    }
+
+    /// B1: end-to-end heap pop order matches `M::cmp` desc on the
+    /// same monomials. Validates `M::cmp_key` ⇄ `M::cmp` contract
+    /// via the actual `BinaryHeap<HeapNode>` consumer for both
+    /// `GrevLexTerm` and `OddElimTerm`.
+    fn heap_pop_order_matches_m_cmp<M>(nvars: u32)
+    where
+        M: Monomial<Fr, 4> + From<MonoTerm<4>>,
+    {
+        use crate::monomial::Monomial as _;
+        let r = mk_ring(nvars);
+        let mut s: u64 = 0xC0FFEE_BADC0DE;
+        let mut step = || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            s
+        };
+        let n = nvars as usize;
+        let mut samples: Vec<MonoTerm<4>> = Vec::with_capacity(48);
+        while samples.len() < 48 {
+            let exps: Vec<u32> = (0..n).map(|_| (step() % 6) as u32).collect();
+            if let Some(m) = MonoTerm::from_exponents(&r, &exps) {
+                samples.push(m);
+            }
+        }
+
+        // Build a heap via M::cmp_key.
+        let mut heap = BinaryHeap::<HeapNode<4>>::new();
+        for (i, t) in samples.iter().enumerate() {
+            let (pre_key, cmp_key) = M::cmp_key(t, &r);
+            heap.push(HeapNode {
+                pre_key,
+                cmp_key,
+                reducer_idx: i,
+            });
+        }
+
+        // Expected order: sort samples by M::cmp descending.
+        let mut expected: Vec<usize> = (0..samples.len()).collect();
+        expected.sort_by(|&i, &j| M::from(samples[j]).cmp(&M::from(samples[i])));
+
+        // Pop and zip — equal-key ties may permute reducer_idx, so
+        // group expected by M::cmp class and check set membership
+        // within each tie group.
+        let mut popped: Vec<usize> = Vec::with_capacity(samples.len());
+        while let Some(n) = heap.pop() {
+            popped.push(n.reducer_idx);
+        }
+
+        // Walk both, grouping by M::cmp equivalence.
+        let mut i = 0;
+        while i < expected.len() {
+            let mut j = i + 1;
+            while j < expected.len()
+                && M::from(samples[expected[j]]).cmp(&M::from(samples[expected[i]]))
+                    == std::cmp::Ordering::Equal
+            {
+                j += 1;
+            }
+            let exp_set: std::collections::BTreeSet<usize> =
+                expected[i..j].iter().copied().collect();
+            let got_set: std::collections::BTreeSet<usize> =
+                popped[i..j].iter().copied().collect();
+            assert_eq!(
+                exp_set, got_set,
+                "heap pop order disagrees with M::cmp at position {} (nvars={})",
+                i, nvars
+            );
+            i = j;
+        }
+    }
+
+    #[test]
+    fn heap_pop_matches_grevlex_cmp() {
+        use crate::monomial::GrevLexTerm;
+        for nvars in [1u32, 3, 7, 15, 31] {
+            heap_pop_order_matches_m_cmp::<GrevLexTerm>(nvars);
+        }
+    }
+
+    #[test]
+    fn heap_pop_matches_oddelim_cmp() {
+        use crate::monomial::OddElimTerm;
+        for nvars in [1u32, 3, 7, 15, 31] {
+            heap_pop_order_matches_m_cmp::<OddElimTerm>(nvars);
+        }
     }
 }

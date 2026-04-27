@@ -92,7 +92,7 @@ pub trait Monomial<F: Field + Copy + Send + Sync, const W: usize = 4>:
     /// for any two `MonoTerm<W>` `a`, `b` over `ring`.
     ///
     /// Default impl: pure DegRevLex via the XOR-flip-mask trick
-    /// (matches `MonoTerm::cmp_degrevlex_packed`). `prefix = 0`.
+    /// (matches `GrevLexTerm::cmp`). `prefix = 0`.
     /// Orders that prepend a block (e.g., elimination orders) must
     /// override this method to put the block metric in `prefix`.
     #[inline]
@@ -655,6 +655,10 @@ impl<F: Field + Copy + Send + Sync, const W: usize> Monomial<F, W> for OddElimTe
     #[inline]
     fn cmp_key(packed: &MonoTerm<W>, ring: &Ring<F, W>) -> (u64, [u64; W]) {
         let nvars = ring.nvars() as usize;
+        debug_assert!(
+            nvars / 2 < W * 4,
+            "elim block_sum capacity requires nvars/2 < W*4"
+        );
         let mut block_sum: u64 = 0;
         let mut i = 1;
         while i < nvars {
@@ -724,22 +728,9 @@ mod tests {
                 let m_cmp = M::from(*a).cmp(&M::from(*b));
                 let (pa, ka) = M::cmp_key(a, &ring);
                 let (pb, kb) = M::cmp_key(b, &ring);
-                let lex = match pa.cmp(&pb) {
-                    Ordering::Equal => {
-                        let mut o = Ordering::Equal;
-                        for i in (0..4).rev() {
-                            match ka[i].cmp(&kb[i]) {
-                                Ordering::Equal => continue,
-                                ord => {
-                                    o = ord;
-                                    break;
-                                }
-                            }
-                        }
-                        o
-                    }
-                    ord => ord,
-                };
+                let lex = pa
+                    .cmp(&pb)
+                    .then_with(|| ka.iter().rev().cmp(kb.iter().rev()));
                 assert_eq!(
                     lex,
                     m_cmp,
