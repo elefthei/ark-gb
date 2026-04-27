@@ -70,7 +70,7 @@ const _: fn() = || {
     assert_send_sync::<MonoTerm>();
     assert_send_sync::<Poly<Fr, GrevLexTerm>>();
     assert_send_sync::<Pair>();
-    assert_send_sync::<SBasis<Fr>>();
+    assert_send_sync::<SBasis<Fr, GrevLexTerm>>();
     assert_send_sync::<LSet>();
     assert_send_sync::<BSet>();
 };

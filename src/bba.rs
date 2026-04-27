@@ -712,7 +712,7 @@ mod tests {
                     )
                 })
                 .collect();
-            let mut s_basis = SBasis::<Fr>::new();
+            let mut s_basis = SBasis::<Fr, GrevLexTerm>::new();
             for p in &basis_polys {
                 s_basis.insert(&r, p.clone());
             }

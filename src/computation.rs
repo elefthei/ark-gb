@@ -44,12 +44,13 @@ use crate::ring::Ring;
 #[derive(Debug)]
 pub struct SharedSBasis<
     F: Field + Copy + Send + Sync,
-    M: Monomial<F> = crate::monomial::GrevLexTerm,
+    M: Monomial<F, W>,
+    const W: usize = 4,
 > {
     /// The three parallel arrays, protected by a single RwLock. On
     /// read-heavy workloads (reduction inner loop) many readers
     /// coexist; append takes exclusive.
-    pub inner: RwLock<SharedSBasisInner<F, M>>,
+    pub inner: RwLock<SharedSBasisInner<F, M, W>>,
     /// Redundancy flags. One `AtomicBool` per basis element. Readers
     /// use `load(Relaxed)`; writers use `store(Relaxed)`. The length
     /// of this vector is synchronised with `inner` via the RwLock —
@@ -64,11 +65,12 @@ pub struct SharedSBasis<
 #[derive(Debug)]
 pub struct SharedSBasisInner<
     F: Field + Copy + Send + Sync,
-    M: Monomial<F> = crate::monomial::GrevLexTerm,
+    M: Monomial<F, W>,
+    const W: usize = 4,
 > {
     /// Polynomials, owned via `Arc<Poly>` so a reader can clone-out
     /// a handle and drop the RwLock immediately.
-    pub polys: Vec<Arc<Poly<F, M>>>,
+    pub polys: Vec<Arc<Poly<F, M, W>>>,
     /// Leading short-exponent vectors.
     pub sevs: Vec<u64>,
     /// Leading total degrees.
@@ -77,7 +79,7 @@ pub struct SharedSBasisInner<
     pub arrivals: Vec<u64>,
 }
 
-impl<F: Field + Copy + Send + Sync, M: Monomial<F>> SharedSBasis<F, M> {
+impl<F: Field + Copy + Send + Sync, M: Monomial<F, W>, const W: usize> SharedSBasis<F, M, W> {
     /// Empty basis.
     pub fn new() -> Self {
         Self {
@@ -105,7 +107,7 @@ impl<F: Field + Copy + Send + Sync, M: Monomial<F>> SharedSBasis<F, M> {
     /// Append `h` to the basis. Returns the index at which `h` was
     /// placed. Takes both write locks in a consistent order
     /// (`inner` first, `redundant` second) to avoid deadlock.
-    pub fn push(&self, h: Arc<Poly<F, M>>, arrival: u64) -> usize {
+    pub fn push(&self, h: Arc<Poly<F, M, W>>, arrival: u64) -> usize {
         let lm_sev = h.lm_sev();
         let lm_deg = h.lm_deg();
         let mut inner = self.inner.write().unwrap();
@@ -122,7 +124,7 @@ impl<F: Field + Copy + Send + Sync, M: Monomial<F>> SharedSBasis<F, M> {
     /// Read-only snapshot of `(polys, sevs, lm_degs)` up to
     /// `len`-many. The returned tuple holds the read guard for the
     /// lifetime of the borrow; drop it quickly.
-    pub fn read_snapshot(&self) -> std::sync::RwLockReadGuard<'_, SharedSBasisInner<F, M>> {
+    pub fn read_snapshot(&self) -> std::sync::RwLockReadGuard<'_, SharedSBasisInner<F, M, W>> {
         self.inner.read().unwrap()
     }
 
@@ -152,7 +154,7 @@ impl<F: Field + Copy + Send + Sync, M: Monomial<F>> SharedSBasis<F, M> {
     /// Clone-out an `Arc<Poly>` for index `idx`. Cheap (one atomic
     /// ref-count bump). Callers use this to hold a stable handle on
     /// a basis element after dropping the read lock.
-    pub fn poly(&self, idx: usize) -> Arc<Poly<F, M>> {
+    pub fn poly(&self, idx: usize) -> Arc<Poly<F, M, W>> {
         Arc::clone(&self.inner.read().unwrap().polys[idx])
     }
 
@@ -164,7 +166,7 @@ impl<F: Field + Copy + Send + Sync, M: Monomial<F>> SharedSBasis<F, M> {
     ///
     /// Takes an `inner` read-guard implicitly to walk the arrays.
     /// Writes redundancy flags via their atomics (no lock needed).
-    pub fn clear_redundant_for(&self, ring: &Ring<F>, idx: usize) {
+    pub fn clear_redundant_for(&self, ring: &Ring<F, W>, idx: usize) {
         let inner = self.inner.read().unwrap();
         let polys = &inner.polys;
         let sevs = &inner.sevs;
@@ -191,7 +193,7 @@ impl<F: Field + Copy + Send + Sync, M: Monomial<F>> SharedSBasis<F, M> {
     }
 }
 
-impl<F: Field + Copy + Send + Sync, M: Monomial<F>> Default for SharedSBasis<F, M> {
+impl<F: Field + Copy + Send + Sync, M: Monomial<F, W>, const W: usize> Default for SharedSBasis<F, M, W> {
     fn default() -> Self {
         Self::new()
     }
@@ -255,11 +257,11 @@ impl Default for SharedLSet {
 /// via `into_basis`, which unwraps the inner `Arc` (cheap because
 /// no worker is holding it any more).
 #[derive(Debug)]
-pub struct Computation<F: Field + Copy + Send + Sync, M: Monomial<F>> {
+pub struct Computation<F: Field + Copy + Send + Sync, M: Monomial<F, W>, const W: usize = 4> {
     /// The ring — immutable, shared by all workers.
-    pub ring: Arc<Ring<F>>,
+    pub ring: Arc<Ring<F, W>>,
     /// The growing basis.
-    pub basis: SharedSBasis<F, M>,
+    pub basis: SharedSBasis<F, M, W>,
     /// The pair queue.
     pub l_set: SharedLSet,
     /// Cancellation flag. Workers poll at cursor boundaries.
@@ -300,9 +302,9 @@ pub struct Computation<F: Field + Copy + Send + Sync, M: Monomial<F>> {
     pub insert_mutex: Mutex<()>,
 }
 
-impl<F: Field + Copy + Send + Sync, M: Monomial<F>> Computation<F, M> {
+impl<F: Field + Copy + Send + Sync, M: Monomial<F, W>, const W: usize> Computation<F, M, W> {
     /// Fresh computation.
-    pub fn new(ring: Arc<Ring<F>>) -> Self {
+    pub fn new(ring: Arc<Ring<F, W>>) -> Self {
         Self {
             ring,
             basis: SharedSBasis::new(),
@@ -345,7 +347,7 @@ impl<F: Field + Copy + Send + Sync, M: Monomial<F>> Computation<F, M> {
     }
 }
 
-impl<F: Field + Copy + Send + Sync, M: Monomial<F>> Default for SharedSBasisInner<F, M> {
+impl<F: Field + Copy + Send + Sync, M: Monomial<F, W>, const W: usize> Default for SharedSBasisInner<F, M, W> {
     fn default() -> Self {
         Self {
             polys: Vec::new(),

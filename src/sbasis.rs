@@ -27,14 +27,14 @@ use crate::ring::Ring;
 /// path. `Send + Sync` by construction (only plain arrays of
 /// owned data).
 #[derive(Debug)]
-pub struct SBasis<F: Field + Copy, M: Monomial<F> = crate::monomial::GrevLexTerm> {
+pub struct SBasis<F: Field + Copy, M: Monomial<F, W>, const W: usize = 4> {
     /// The polynomials, in insertion order. `Box` so `&Poly` remains
     /// stable across vector growth — the port plan §7.1 specifies
     /// this layout so the future parallel sweep can hold `&Poly`
     /// across concurrent `insert` calls. Clippy's `vec_box` lint
     /// doesn't know about that requirement.
     #[allow(clippy::vec_box)]
-    polys: Vec<Box<Poly<F, M>>>,
+    polys: Vec<Box<Poly<F, M, W>>>,
     /// Leading short-exponent vectors. `sevs[i] == polys[i].lm_sev()`
     /// when `polys[i]` is nonzero, else 0.
     sevs: Vec<u64>,
@@ -42,11 +42,11 @@ pub struct SBasis<F: Field + Copy, M: Monomial<F> = crate::monomial::GrevLexTerm
     /// `lms[i] == polys[i].leading().unwrap().1.clone()`. Used by
     /// the divisor sweep in `bba::find_divisor_idx` (ADR-010) to
     /// avoid the `Vec<Box<Poly>>` pointer chase per probed
-    /// candidate. Each `MonoTerm` is 48 bytes, so for ~3000-element
+    /// candidate. Each `MonoTerm<W>` is 48 bytes, so for ~3000-element
     /// staging bases the cache totals ~144 KB — fits in L2,
     /// streams cleanly during the sweep. See ADR-010 in
     /// `~/ark_gb/docs/design-decisions.md`.
-    lms: Vec<MonoTerm>,
+    lms: Vec<MonoTerm<W>>,
     /// Leading total degrees. `lm_degs[i] == polys[i].lm_deg()`.
     lm_degs: Vec<u32>,
     /// Redundancy flags. `redundant[i] == true` means `polys[i]`'s
@@ -61,13 +61,13 @@ pub struct SBasis<F: Field + Copy, M: Monomial<F> = crate::monomial::GrevLexTerm
     next_arrival: u64,
 }
 
-impl<F: Field + Copy> Default for SBasis<F> {
+impl<F: Field + Copy> Default for SBasis<F, crate::monomial::GrevLexTerm> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<F: Field + Copy, M: Monomial<F>> SBasis<F, M> {
+impl<F: Field + Copy, M: Monomial<F, W>, const W: usize> SBasis<F, M, W> {
     /// Empty basis.
     pub fn new() -> Self {
         Self {
@@ -95,7 +95,7 @@ impl<F: Field + Copy, M: Monomial<F>> SBasis<F, M> {
 
     /// Borrow the polynomial at `idx`.
     #[inline]
-    pub fn poly(&self, idx: usize) -> &Poly<F, M> {
+    pub fn poly(&self, idx: usize) -> &Poly<F, M, W> {
         &self.polys[idx]
     }
 
@@ -114,7 +114,7 @@ impl<F: Field + Copy, M: Monomial<F>> SBasis<F, M> {
     /// Slice of cached leading monomials. Length equals [`len`](Self::len).
     /// `lms()[i] == polys[i].leading().unwrap().1.clone()`. ADR-010.
     #[inline]
-    pub fn lms(&self) -> &[MonoTerm] {
+    pub fn lms(&self) -> &[MonoTerm<W>] {
         &self.lms
     }
 
@@ -137,7 +137,7 @@ impl<F: Field + Copy, M: Monomial<F>> SBasis<F, M> {
     }
 
     /// Iterate non-redundant `(idx, &Poly)` pairs.
-    pub fn iter_active(&self) -> impl Iterator<Item = (usize, &Poly<F, M>)> + '_ {
+    pub fn iter_active(&self) -> impl Iterator<Item = (usize, &Poly<F, M, W>)> + '_ {
         self.polys
             .iter()
             .enumerate()
@@ -152,7 +152,7 @@ impl<F: Field + Copy, M: Monomial<F>> SBasis<F, M> {
     /// the index at which `h` was placed. The polynomial must be
     /// nonzero; inserting zero panics in debug builds and no-ops in
     /// release (returns the would-be index without actually pushing).
-    pub fn insert(&mut self, ring: &Ring<F>, h: Poly<F, M>) -> usize {
+    pub fn insert(&mut self, ring: &Ring<F, W>, h: Poly<F, M, W>) -> usize {
         let idx = self.insert_no_clear(h);
         self.clear_redundant_for(ring, idx);
         idx
@@ -168,7 +168,7 @@ impl<F: Field + Copy, M: Monomial<F>> SBasis<F, M> {
     ///
     /// Returns the index at which `h` was placed. Debug-only
     /// assertion: `h` is nonzero.
-    pub fn insert_no_clear(&mut self, h: Poly<F, M>) -> usize {
+    pub fn insert_no_clear(&mut self, h: Poly<F, M, W>) -> usize {
         debug_assert!(!h.is_zero(), "SBasis::insert of zero polynomial");
         if h.is_zero() {
             return self.polys.len();
@@ -197,7 +197,7 @@ impl<F: Field + Copy, M: Monomial<F>> SBasis<F, M> {
     /// This is the "clearS" half of insert, split out so the bba
     /// driver can run pair generation between the two halves. Safe
     /// to call multiple times — redundancy is monotonic.
-    pub fn clear_redundant_for(&mut self, ring: &Ring<F>, idx: usize) {
+    pub fn clear_redundant_for(&mut self, ring: &Ring<F, W>, idx: usize) {
         debug_assert!(idx < self.polys.len());
         let lm_sev = self.sevs[idx];
         // ADR-010: read leader from the lms cache rather than
@@ -244,7 +244,7 @@ impl<F: Field + Copy, M: Monomial<F>> SBasis<F, M> {
     /// monomial as the old poly (tail reduction never changes the
     /// leader); this is checked in debug builds and silently trusted
     /// in release. `new_poly` must be nonzero.
-    pub fn replace_poly(&mut self, ring: &Ring<F>, idx: usize, new_poly: Poly<F, M>) {
+    pub fn replace_poly(&mut self, ring: &Ring<F, W>, idx: usize, new_poly: Poly<F, M, W>) {
         debug_assert!(!new_poly.is_zero(), "replace_poly with zero poly");
         debug_assert!(idx < self.polys.len());
         // Debug-only check that leading monomial is preserved.
@@ -292,7 +292,7 @@ impl<F: Field + Copy, M: Monomial<F>> SBasis<F, M> {
     /// - For every `i`, `lm_degs[i] == polys[i].lm_deg()`.
     /// - No polynomial is zero.
     /// - `arrival[i]` is strictly ascending.
-    pub fn assert_canonical(&self, ring: &Ring<F>) {
+    pub fn assert_canonical(&self, ring: &Ring<F, W>) {
         let n = self.polys.len();
         assert_eq!(self.sevs.len(), n);
         assert_eq!(self.lms.len(), n, "lms cache length mismatch (ADR-010)");
@@ -323,16 +323,16 @@ impl<F: Field + Copy, M: Monomial<F>> SBasis<F, M> {
 }
 
 /// Helper: `m_lm.divides(other_lm)` with sev pre-filter. Lives on
-/// `MonoTerm` logically but we re-implement it here so callers that
+/// `MonoTerm<W>` logically but we re-implement it here so callers that
 /// already hold both `sev` values don't pay the hash-map-friendly
 /// `MonoTerm::divides` walk until the sev check passes.
 #[inline]
-pub fn divides_with_sev<F: Field + Copy + Send + Sync, M: Monomial<F>>(
+pub fn divides_with_sev<F: Field + Copy + Send + Sync, M: Monomial<F, W>, const W: usize>(
     m_sev: u64,
     other_sev: u64,
-    m: &MonoTerm,
-    other: &MonoTerm,
-    ring: &Ring<F>,
+    m: &MonoTerm<W>,
+    other: &MonoTerm<W>,
+    ring: &Ring<F, W>,
 ) -> bool {
     if (m_sev & !other_sev) != 0 {
         return false;
@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn empty_basis_is_empty() {
         let r = mk_ring(3);
-        let s = SBasis::<Fr>::new();
+        let s = SBasis::<Fr, GrevLexTerm>::new();
         s.assert_canonical(&r);
         assert!(s.is_empty());
         assert_eq!(s.len(), 0);
@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn insert_preserves_order() {
         let r = mk_ring(3);
-        let mut s = SBasis::<Fr>::new();
+        let mut s = SBasis::<Fr, GrevLexTerm>::new();
         let a = s.insert(&r, poly1(&r, Fr::one(), &[2, 0, 0]));
         let b = s.insert(&r, poly1(&r, Fr::one(), &[0, 3, 0]));
         let c = s.insert(&r, poly1(&r, Fr::one(), &[0, 0, 4]));
@@ -387,7 +387,7 @@ mod tests {
         // Insert x^2 first, then x: x | x^2, so the earlier entry
         // becomes redundant.
         let r = mk_ring(3);
-        let mut s = SBasis::<Fr>::new();
+        let mut s = SBasis::<Fr, GrevLexTerm>::new();
         s.insert(&r, poly1(&r, Fr::one(), &[2, 0, 0]));
         s.insert(&r, poly1(&r, Fr::one(), &[1, 0, 0]));
         s.assert_canonical(&r);
@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn coprime_leading_monomials_do_not_mark_redundant() {
         let r = mk_ring(3);
-        let mut s = SBasis::<Fr>::new();
+        let mut s = SBasis::<Fr, GrevLexTerm>::new();
         s.insert(&r, poly1(&r, Fr::one(), &[2, 0, 0])); // x^2
         s.insert(&r, poly1(&r, Fr::one(), &[0, 2, 0])); // y^2
         s.insert(&r, poly1(&r, Fr::one(), &[0, 0, 2])); // z^2
@@ -411,7 +411,7 @@ mod tests {
     #[test]
     fn iter_active_skips_redundant() {
         let r = mk_ring(3);
-        let mut s = SBasis::<Fr>::new();
+        let mut s = SBasis::<Fr, GrevLexTerm>::new();
         s.insert(&r, poly1(&r, Fr::one(), &[2, 0, 0]));
         s.insert(&r, poly1(&r, Fr::one(), &[1, 0, 0]));
         s.insert(&r, poly1(&r, Fr::one(), &[0, 1, 0]));
