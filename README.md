@@ -63,13 +63,13 @@ codegen so the SIMD paths in `src/simd.rs` get compiled in:
 RUSTFLAGS="-C target-cpu=native" cargo build --release
 ```
 
-Cargo features (all default off):
+Cargo features:
 
-| Feature                  | Effect                                                  |
-|--------------------------|---------------------------------------------------------|
-| `heap_reducer`           | Monagan-Pearce reducer instead of geobucket (ADR-008)   |
-| `linked_list_poly`       | Linked-list `Poly` backend instead of flat array        |
-| `linked_list_poly_pool`  | Thread-local Node pool for the list backend (requires `linked_list_poly`) |
+| Feature                  | Default | Effect                                                  |
+|--------------------------|:-------:|---------------------------------------------------------|
+| `heap_reducer`           |   on    | Monagan-Pearce reducer (ADR-008). Disable with `--no-default-features` to use the geobucket (ADR-002). |
+| `linked_list_poly`       |   off   | Linked-list `Poly` backend instead of flat array        |
+| `linked_list_poly_pool`  |   off   | Thread-local Node pool for the list backend (requires `linked_list_poly`) |
 
 The Singular-side integration is exercised through the
 staging-validation script described in

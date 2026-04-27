@@ -237,11 +237,14 @@ fn insert_and_generate_pairs_with_sugar<
 ///
 /// Dispatches to one of two reducer implementations based on the
 /// `heap_reducer` cargo feature:
-/// * default (geobucket): [`reduce_lobject_geobucket`] — the
-///   ADR-002 reducer architecture, in production use through
-///   v5 of the optimisation series.
-/// * `--features heap_reducer`: [`reduce_lobject_heap`] — the
-///   ADR-008 heap-based Monagan-Pearce reducer.
+/// * default (`heap_reducer` is in `default-features`):
+///   [`reduce_lobject_heap`] — the ADR-008 heap-based
+///   Monagan-Pearce reducer. Empirically faster on every
+///   benchmarked workload.
+/// * `--no-default-features` (or any explicit feature set that
+///   omits `heap_reducer`): [`reduce_lobject_geobucket`] — the
+///   ADR-002 geobucket reducer, kept available for A/B comparison
+///   and historical reference.
 ///
 /// Both implementations are always compiled (feature-gated only
 /// at the dispatch site, not at the function definition). The
@@ -263,8 +266,10 @@ fn reduce_lobject<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>
 /// reduction step calls `bucket.minus_m_mult_p` to subtract
 /// `c * m * s` and `bucket.refresh()` to recompute the leader.
 ///
-/// This is the default reducer (compiled into `reduce_lobject`
-/// when `--features heap_reducer` is *not* set).
+/// Compiled into `reduce_lobject` when the `heap_reducer` feature
+/// is *not* set (e.g. `--no-default-features`). Otherwise kept
+/// available as a public symbol for direct use and for the
+/// `geobucket_and_heap_reducer_agree` cross-validation test.
 pub fn reduce_lobject_geobucket<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
     lobj: &mut LObject<F, M>,
     s_basis: &SBasis<F, M>,
