@@ -89,3 +89,92 @@ fn w8_matches_w4_on_shared_problem() {
     lm.sort();
     assert_eq!(lm, vec![vec![0, 1], vec![1, 0]]);
 }
+
+use ark_gb::monomial::OddElimTerm;
+use std::cmp::Ordering;
+
+/// B3: cmp_key vs M::cmp contract at W=8 over 63 vars (the
+/// max for W=8). Mirrors the W=4 lib property test but
+/// exercises the W-generic `OddElimTerm::cmp_key` impl beyond
+/// the default width — including odd indices > 31, which can
+/// only exist at W >= 5.
+#[test]
+fn w8_cmp_key_lex_matches_m_cmp_oddelim() {
+    use ark_gb::monomial::Monomial as _;
+    const W: usize = 8;
+    let ring = Ring::<Fr, W>::new(63).unwrap();
+    let n = 63usize;
+
+    let mut s: u64 = 0xCAFEBABE_DEADBEEF;
+    let mut step = || {
+        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        s
+    };
+
+    let mut samples: Vec<MonoTerm<W>> = Vec::with_capacity(48);
+    while samples.len() < 48 {
+        let exps: Vec<u32> = (0..n).map(|_| (step() % 5) as u32).collect();
+        if let Some(m) = MonoTerm::from_exponents(&ring, &exps) {
+            samples.push(m);
+        }
+    }
+
+    for a in &samples {
+        for b in &samples {
+            let m_cmp = OddElimTerm::<W>::from(*a).cmp(&OddElimTerm::<W>::from(*b));
+            let (pa, ka) = OddElimTerm::<W>::cmp_key(a, &ring);
+            let (pb, kb) = OddElimTerm::<W>::cmp_key(b, &ring);
+            let lex = pa.cmp(&pb).then_with(|| ka.iter().rev().cmp(kb.iter().rev()));
+            assert_eq!(
+                lex, m_cmp,
+                "cmp_key lex disagrees with M::cmp at W=8 (a={:?} b={:?})",
+                a.exponents(&ring),
+                b.exponents(&ring)
+            );
+            // Silence unused-import warning.
+            let _: Ordering = lex;
+        }
+    }
+}
+
+/// B4: a small ideal at W=8 with `OddElimTerm<8>` over 5 vars.
+/// Confirms the reducer's heap path works correctly past the
+/// W=4 default. The ideal `{x0 + x1, x0 - x1}` reduces to
+/// `{x0, x1}` regardless of order; here we just need it to
+/// terminate with 2 polynomials.
+#[test]
+fn w8_oddelim_small_gb_terminates() {
+    const W: usize = 8;
+    let ring = Arc::new(Ring::<Fr, W>::new(5).unwrap());
+
+    let mk = |exps: &[u32]| -> OddElimTerm<W> {
+        OddElimTerm::from(MonoTerm::<W>::from_exponents(&ring, exps).unwrap())
+    };
+
+    // f1 = x0 + x1 ; f2 = x0 - x1
+    let f1 = Poly::<Fr, OddElimTerm<W>, W>::from_terms(
+        &ring,
+        vec![
+            (Fr::one(), mk(&[1, 0, 0, 0, 0])),
+            (Fr::one(), mk(&[0, 1, 0, 0, 0])),
+        ],
+    );
+    let f2 = Poly::<Fr, OddElimTerm<W>, W>::from_terms(
+        &ring,
+        vec![
+            (Fr::one(), mk(&[1, 0, 0, 0, 0])),
+            (-Fr::one(), mk(&[0, 1, 0, 0, 0])),
+        ],
+    );
+
+    let gb = compute_gb(ring.clone(), vec![f1, f2]);
+    assert_eq!(gb.len(), 2, "expected GB of size 2, got {}", gb.len());
+    let mut lm: Vec<Vec<u32>> = gb
+        .iter()
+        .map(|g| g.leading().unwrap().1.exponents(&ring))
+        .collect();
+    lm.sort();
+    // Leading monomials are {x0, x1} in any order.
+    assert_eq!(lm[0], vec![0, 1, 0, 0, 0]);
+    assert_eq!(lm[1], vec![1, 0, 0, 0, 0]);
+}
