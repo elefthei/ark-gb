@@ -20,8 +20,8 @@ use crate::pair::Pair;
 /// `Send + Sync` — just plain data. The driver owns it for the
 /// duration of a single `enterpairs` call and drops it afterward.
 #[derive(Debug, Default)]
-pub struct BSet {
-    pairs: Vec<Pair>,
+pub struct BSet<const W: usize = 4> {
+    pairs: Vec<Pair<W>>,
     /// Parallel array of `pair.lcm_sev` values. Maintained in
     /// lockstep with `pairs` (push appends to both; swap_remove
     /// swap-removes from both at the same index). Used by the
@@ -36,7 +36,7 @@ pub struct BSet {
     by_indices: HashMap<(u32, u32), usize>,
 }
 
-impl BSet {
+impl<const W: usize> BSet<W> {
     /// Empty B set.
     pub fn new() -> Self {
         Self {
@@ -62,7 +62,7 @@ impl BSet {
     /// present — the caller is expected to build B without
     /// duplicates (the chain criterion handles chain-implied pairs,
     /// not literal duplicates).
-    pub fn push(&mut self, pair: Pair) {
+    pub fn push(&mut self, pair: Pair<W>) {
         let idx = self.pairs.len();
         let key = (pair.i, pair.j);
         debug_assert!(
@@ -77,7 +77,7 @@ impl BSet {
 
     /// Borrow the raw pair slice.
     #[inline]
-    pub fn pairs(&self) -> &[Pair] {
+    pub fn pairs(&self) -> &[Pair<W>] {
         &self.pairs
     }
 
@@ -91,7 +91,7 @@ impl BSet {
 
     /// Remove the pair at `at` (swap-remove). Returns the removed
     /// pair. Keeps `by_indices` consistent.
-    pub fn swap_remove(&mut self, at: usize) -> Pair {
+    pub fn swap_remove(&mut self, at: usize) -> Pair<W> {
         let removed = self.pairs.swap_remove(at);
         self.lcm_sevs.swap_remove(at);
         self.by_indices.remove(&(removed.i, removed.j));
@@ -104,14 +104,14 @@ impl BSet {
     }
 
     /// Drain the entire set, consuming it into its constituent pairs.
-    pub fn into_pairs(self) -> Vec<Pair> {
+    pub fn into_pairs(self) -> Vec<Pair<W>> {
         self.pairs
     }
 
     /// Debug-only invariant check.
     pub fn assert_canonical<F: ark_ff::Field + Copy + Send + Sync>(
         &self,
-        ring: &crate::ring::Ring<F>,
+        ring: &crate::ring::Ring<F, W>,
     ) {
         assert_eq!(self.pairs.len(), self.by_indices.len(), "index size");
         assert_eq!(

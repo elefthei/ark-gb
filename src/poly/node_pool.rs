@@ -14,7 +14,7 @@ use crate::monomial::Monomial;
 use super::poly_list::Node;
 
 /// Allocate a `Node` via `Box::new`; hand back the raw pointer.
-pub(super) fn alloc<F: Field + Copy, M: Monomial<F>>(
+pub(super) fn alloc<F: Field + Copy, M: Monomial<F, W>, const W: usize>(
     coeff: F,
     mono: M,
     next: Option<NonNull<Node<F, M>>>,
@@ -32,7 +32,7 @@ pub(super) fn alloc<F: Field + Copy, M: Monomial<F>>(
 ///   (or equivalently, cleared it). We do **not** chain-free to
 ///   avoid stack-recursive drop on long lists.
 /// * `ptr` must have been obtained from an earlier `alloc` call.
-pub(super) unsafe fn dealloc<F: Field + Copy, M: Monomial<F>>(ptr: NonNull<Node<F, M>>) {
+pub(super) unsafe fn dealloc<F: Field + Copy, M: Monomial<F, W>, const W: usize>(ptr: NonNull<Node<F, M>>) {
     // Safety-checked by contract above: reclaim the `Box` and drop
     // it. The implicit drop walks only this one node because the
     // caller has already cleared `next`.

@@ -22,7 +22,7 @@ fn mono(r: &Ring<Fr>, e: &[u32]) -> GrevLexTerm {
     GrevLexTerm::from(MonoTerm::from_exponents(r, e).unwrap())
 }
 
-fn cyclic5_input(ring: &Arc<Ring<Fr>>) -> Vec<Poly<Fr>> {
+fn cyclic5_input(ring: &Arc<Ring<Fr>>) -> Vec<Poly<Fr, GrevLexTerm>> {
     let m = |e: &[u32]| mono(ring, e);
     let one = Fr::one();
     let neg_one = -Fr::one();

@@ -15,11 +15,19 @@ crate-type = ["rlib"]
 ark-ff = { git = "https://github.com/arkworks-rs/algebra.git", default-features = false }
 
 [features]
-# Default reducer is the geobucket (ADR-002). Enabling this feature
-# switches `bba::reduce_lobject` to the heap-based Monagan-Pearce
-# reducer (ADR-008). Both reducers are always compiled; the flag
-# only chooses which one bba uses internally. Cross-validation
-# tests in `bba` always exercise both regardless of flag state.
+# Default features. The Monagan-Pearce heap reducer is enabled by
+# default because empirical timings (see ADR-008 / commit log) show
+# it beats the geobucket on every measured workload, with up to
+# 1.76× speedup on katsura_6. Disable with `--no-default-features`
+# (or omit `heap_reducer` from the explicit feature list) to fall
+# back to the ADR-002 geobucket reducer.
+default = ["heap_reducer"]
+
+# Switches `bba::reduce_lobject` to the heap-based Monagan-Pearce
+# reducer (ADR-008). On by default. Both reducers are always
+# compiled; the flag only chooses which one bba uses internally.
+# Cross-validation tests in `bba` always exercise both regardless
+# of flag state.
 heap_reducer = []
 
 # Switch the `Poly` type from the default flat-array backend

@@ -26,7 +26,7 @@ fn poly_strategy(
     ring: Ring<Fr>,
     max_terms: usize,
     max_exp: u32,
-) -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>)> {
+) -> impl Strategy<Value = (Ring<Fr>, Poly<Fr, GrevLexTerm>)> {
     let n = ring.nvars() as usize;
     prop::collection::vec(
         (arb_nonzero_fr(), prop::collection::vec(0u32..max_exp, n)),
@@ -50,7 +50,7 @@ fn poly_strategy(
 /// Ring + three polys. Small caps so products stay within the 8-bit
 /// exponent budget (we sum exponents of up to two operands, so
 /// max_exp * 2 ≤ 255 → max_exp ≤ 127).
-fn ring_poly3_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>, Poly<Fr>)> {
+fn ring_poly3_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr, GrevLexTerm>, Poly<Fr, GrevLexTerm>, Poly<Fr, GrevLexTerm>)> {
     ring_strategy(5).prop_flat_map(|r| {
         (
             Just(r.clone()),
@@ -62,7 +62,7 @@ fn ring_poly3_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>,
     })
 }
 
-fn ring_poly2_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>)> {
+fn ring_poly2_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr, GrevLexTerm>, Poly<Fr, GrevLexTerm>)> {
     ring_strategy(5).prop_flat_map(|r| {
         (
             Just(r.clone()),
@@ -73,12 +73,12 @@ fn ring_poly2_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>)
     })
 }
 
-fn ring_poly1_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr>)> {
+fn ring_poly1_strategy() -> impl Strategy<Value = (Ring<Fr>, Poly<Fr, GrevLexTerm>)> {
     ring_strategy(5).prop_flat_map(|r| poly_strategy(r, 10, 15))
 }
 
 fn ring_poly_term_strategy()
--> impl Strategy<Value = (Ring<Fr>, Poly<Fr>, Poly<Fr>, Fr, GrevLexTerm)> {
+-> impl Strategy<Value = (Ring<Fr>, Poly<Fr, GrevLexTerm>, Poly<Fr, GrevLexTerm>, Fr, GrevLexTerm)> {
     ring_strategy(4).prop_flat_map(|r| {
         let n = r.nvars() as usize;
         (
@@ -286,7 +286,7 @@ fn single_term_edge_cases() {
     assert_eq!(one_poly.len(), 1);
     assert_eq!(one_poly.lm_deg(), 0);
     // The zero polynomial.
-    let z = Poly::<Fr>::zero();
+    let z = Poly::<Fr, GrevLexTerm>::zero();
     z.assert_canonical(&r);
     assert!(z.is_zero());
     // Single variable.

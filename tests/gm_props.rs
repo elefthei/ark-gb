@@ -124,7 +124,7 @@ proptest! {
         (r, basis_lms, h_lm) in scenario_strategy(),
     ) {
         // Build the SBasis with single-term polys.
-        let mut s = SBasis::<Fr>::new();
+        let mut s = SBasis::<Fr, GrevLexTerm>::new();
         for m in &basis_lms {
             s.insert(&r, Poly::monomial(&r, Fr::one(), GrevLexTerm::from(*m)));
         }

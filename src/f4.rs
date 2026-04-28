@@ -62,12 +62,13 @@ use crate::ring::Ring;
 /// is checked by the test suite, not at runtime.
 pub fn compute_gb_f4<
     F: Field + Copy + Send + Sync + 'static,
-    M: Monomial<F> + From<MonoTerm> + 'static,
+    M: Monomial<F, W> + From<MonoTerm<W>> + 'static,
+    const W: usize,
 >(
-    ring: Arc<Ring<F>>,
-    input: Vec<Poly<F, M>>,
-) -> Vec<Poly<F, M>> {
-    let mut basis: Vec<Poly<F, M>> = Vec::new();
+    ring: Arc<Ring<F, W>>,
+    input: Vec<Poly<F, M, W>>,
+) -> Vec<Poly<F, M, W>> {
+    let mut basis: Vec<Poly<F, M, W>> = Vec::new();
 
     // Seed the basis with monic-normalised, non-zero inputs. We do
     // *not* attempt LM-based dedup here — a generator whose LM is
@@ -88,7 +89,7 @@ pub fn compute_gb_f4<
         return Vec::new();
     }
 
-    // Pair queue: min-heap on (sugar = lcm total degree, j, i) so we
+    // Pair<W> queue: min-heap on (sugar = lcm total degree, j, i) so we
     // pop the smallest-sugar pair (and ties are broken
     // deterministically). All pairs `(i, j)` with `i < j`.
     type PairItem = (Reverse<u32>, u32, u32);
@@ -141,23 +142,23 @@ pub fn compute_gb_f4<
 /// Helper: borrow `basis` together with `h` as if `h` were already
 /// pushed, so [`push_pair`] can read both. Cheap — uses a closure-style
 /// indexing trick via a dedicated helper.
-fn basis_with<'a, F: Field + Copy + Send + Sync, M: Monomial<F>>(
-    basis: &'a [Poly<F, M>],
-    h: &'a Poly<F, M>,
-) -> SliceWith<'a, F, M> {
+fn basis_with<'a, F: Field + Copy + Send + Sync, M: Monomial<F, W>, const W: usize>(
+    basis: &'a [Poly<F, M, W>],
+    h: &'a Poly<F, M, W>,
+) -> SliceWith<'a, F, M, W> {
     SliceWith {
         head: basis,
         tail: h,
     }
 }
 
-struct SliceWith<'a, F: Field + Copy + Send + Sync, M: Monomial<F>> {
-    head: &'a [Poly<F, M>],
-    tail: &'a Poly<F, M>,
+struct SliceWith<'a, F: Field + Copy + Send + Sync, M: Monomial<F, W>, const W: usize> {
+    head: &'a [Poly<F, M, W>],
+    tail: &'a Poly<F, M, W>,
 }
 
-impl<F: Field + Copy + Send + Sync, M: Monomial<F>> SliceWith<'_, F, M> {
-    fn get(&self, idx: usize) -> &Poly<F, M> {
+impl<F: Field + Copy + Send + Sync, M: Monomial<F, W>, const W: usize> SliceWith<'_, F, M, W> {
+    fn get(&self, idx: usize) -> &Poly<F, M, W> {
         if idx < self.head.len() {
             &self.head[idx]
         } else {
@@ -166,32 +167,32 @@ impl<F: Field + Copy + Send + Sync, M: Monomial<F>> SliceWith<'_, F, M> {
     }
 }
 
-trait PolyView<F: Field + Copy + Send + Sync, M: Monomial<F>> {
-    fn at(&self, i: usize) -> &Poly<F, M>;
+trait PolyView<F: Field + Copy + Send + Sync, M: Monomial<F, W>, const W: usize> {
+    fn at(&self, i: usize) -> &Poly<F, M, W>;
 }
 
-impl<F: Field + Copy + Send + Sync, M: Monomial<F>> PolyView<F, M> for [Poly<F, M>] {
-    fn at(&self, i: usize) -> &Poly<F, M> {
+impl<F: Field + Copy + Send + Sync, M: Monomial<F, W>, const W: usize> PolyView<F, M, W> for [Poly<F, M, W>] {
+    fn at(&self, i: usize) -> &Poly<F, M, W> {
         &self[i]
     }
 }
 
-impl<F: Field + Copy + Send + Sync, M: Monomial<F>> PolyView<F, M> for SliceWith<'_, F, M> {
-    fn at(&self, i: usize) -> &Poly<F, M> {
+impl<F: Field + Copy + Send + Sync, M: Monomial<F, W>, const W: usize> PolyView<F, M, W> for SliceWith<'_, F, M, W> {
+    fn at(&self, i: usize) -> &Poly<F, M, W> {
         self.get(i)
     }
 }
 
-fn push_pair<F, M, V>(
+fn push_pair<F, M, V, const W: usize>(
     pairs: &mut BinaryHeap<(Reverse<u32>, u32, u32)>,
     view: &V,
     i: u32,
     j: u32,
-    ring: &Ring<F>,
+    ring: &Ring<F, W>,
 ) where
     F: Field + Copy + Send + Sync,
-    M: Monomial<F>,
-    V: PolyView<F, M> + ?Sized,
+    M: Monomial<F, W>,
+    V: PolyView<F, M, W> + ?Sized,
 {
     let li = view.at(i as usize).leading().expect("basis non-zero").1;
     let lj = view.at(j as usize).leading().expect("basis non-zero").1;
@@ -206,17 +207,17 @@ fn push_pair<F, M, V>(
 /// leading column was not an input pivot column). They are emitted in
 /// post-RREF order; the caller is expected to monic-normalise and
 /// integrate them into the basis.
-fn f4_reduce_batch<F, M>(
-    ring: &Ring<F>,
-    basis: &[Poly<F, M>],
+fn f4_reduce_batch<F, M, const W: usize>(
+    ring: &Ring<F, W>,
+    basis: &[Poly<F, M, W>],
     batch: &[(usize, usize)],
-) -> Vec<Poly<F, M>>
+) -> Vec<Poly<F, M, W>>
 where
     F: Field + Copy + Send + Sync,
-    M: Monomial<F>,
+    M: Monomial<F, W>,
 {
     // -- 1. seed rows from each S-pair --------------------------------
-    let mut row_polys: Vec<Poly<F, M>> = Vec::with_capacity(batch.len() * 2);
+    let mut row_polys: Vec<Poly<F, M, W>> = Vec::with_capacity(batch.len() * 2);
     let mut covered_leads: HashSet<M> = HashSet::new();
 
     for &(i, j) in batch {
@@ -296,7 +297,7 @@ where
     rref(rows.as_mut_slice());
 
     // -- 5. harvest --------------------------------------------------
-    let mut new_polys: Vec<Poly<F, M>> = Vec::new();
+    let mut new_polys: Vec<Poly<F, M, W>> = Vec::new();
     for row in rows {
         let Some(lc) = row.leading_col() else {
             continue; // zero row
@@ -325,10 +326,10 @@ where
 /// its leading monomial (under `M::cmp`); since the monomial order is
 /// well-founded and the basis size is fixed, the outer loop terminates
 /// after `O(|basis|^2 * sum(|poly|))` reductions in the worst case.
-fn inter_reduce<F, M>(basis: &mut Vec<Poly<F, M>>, ring: &Ring<F>)
+fn inter_reduce<F, M, const W: usize>(basis: &mut Vec<Poly<F, M, W>>, ring: &Ring<F, W>)
 where
     F: Field + Copy + Send + Sync,
-    M: Monomial<F>,
+    M: Monomial<F, W>,
 {
     let mut changed = true;
     while changed {
@@ -380,10 +381,10 @@ where
 /// One pass of tail reduction on `basis[i]`: walk each non-leading
 /// term and reduce it by some other basis element if possible.
 /// Returns `true` if any reduction occurred.
-fn reduce_tail<F, M>(basis: &mut [Poly<F, M>], i: usize, ring: &Ring<F>) -> bool
+fn reduce_tail<F, M, const W: usize>(basis: &mut [Poly<F, M, W>], i: usize, ring: &Ring<F, W>) -> bool
 where
     F: Field + Copy + Send + Sync,
-    M: Monomial<F>,
+    M: Monomial<F, W>,
 {
     let mut reduced = false;
     'outer: loop {

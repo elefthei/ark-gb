@@ -37,7 +37,7 @@
 //! | `basis.inner.lm_degs`   | `Vec<u32>`           | RwLock read | RwLock write|
 //! | `basis.inner.arrivals`  | `Vec<u64>`           | RwLock read | RwLock write|
 //! | `basis.redundant[i]`    | `AtomicBool`         | load Relax  | store Relax |
-//! | `l_set`                 | `Mutex<LSet>`        | Mutex       | Mutex       |
+//! | `l_set`                 | `Mutex<LSet<W>>`        | Mutex       | Mutex       |
 //! | `cancel`                | `AtomicBool`         | load Relax  | store SeqCst|
 //! | `next_arrival`          | `AtomicU64`          | fetch_add   | fetch_add   |
 //! | `in_flight`             | `AtomicUsize`        | load Acquire| fetch_add/sub|
@@ -85,12 +85,13 @@ impl std::error::Error for Cancelled {}
 /// computation's cancel flag was set before completion.
 pub fn compute_gb_parallel<
     F: Field + Copy + Send + Sync + 'static,
-    M: Monomial<F> + From<MonoTerm> + 'static,
+    M: Monomial<F, W> + From<MonoTerm<W>> + 'static,
+    const W: usize,
 >(
-    ring: Arc<Ring<F>>,
-    input: Vec<Poly<F, M>>,
+    ring: Arc<Ring<F, W>>,
+    input: Vec<Poly<F, M, W>>,
     num_threads: usize,
-) -> Result<Vec<Poly<F, M>>, Cancelled> {
+) -> Result<Vec<Poly<F, M, W>>, Cancelled> {
     assert!(num_threads >= 1, "num_threads must be >= 1");
 
     let comp = Arc::new(Computation::new(Arc::clone(&ring)));
@@ -164,9 +165,10 @@ pub fn compute_gb_parallel<
 ///    non-zero) run enterpairs. Decrement `in_flight`.
 fn worker_loop<
     F: Field + Copy + Send + Sync + 'static,
-    M: Monomial<F> + From<MonoTerm> + 'static,
+    M: Monomial<F, W> + From<MonoTerm<W>> + 'static,
+    const W: usize,
 >(
-    comp: Arc<Computation<F, M>>,
+    comp: Arc<Computation<F, M, W>>,
 ) {
     loop {
         if comp.is_cancelled() {
@@ -226,9 +228,9 @@ fn worker_loop<
 /// problem: a worker may be about to insert a pair, so an empty L
 /// is not sufficient to declare done. We use `in_flight` as a
 /// witness that work may still arrive.
-fn pop_or_wait<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    comp: &Computation<F, M>,
-) -> Option<Pair> {
+fn pop_or_wait<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    comp: &Computation<F, M, W>,
+) -> Option<Pair<W>> {
     loop {
         {
             let mut l = comp.l_set.lock();
@@ -258,10 +260,10 @@ fn pop_or_wait<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
 
 /// Build an LObject from a pair, using a short-lived read lock on
 /// the basis.
-fn build_lobject_for_pair<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    comp: &Computation<F, M>,
-    pair: &Pair,
-) -> Option<LObject<F, M>> {
+fn build_lobject_for_pair<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    comp: &Computation<F, M, W>,
+    pair: &Pair<W>,
+) -> Option<LObject<F, M, W>> {
     let s_i = comp.basis.poly(pair.i as usize);
     let s_j = comp.basis.poly(pair.j as usize);
     LObject::from_spoly(Arc::clone(&comp.ring), &s_i, &s_j, pair)
@@ -280,9 +282,9 @@ fn build_lobject_for_pair<F: Field + Copy + Send + Sync, M: Monomial<F> + From<M
 /// reduces it serially. This matches the port plan §10.3 "start
 /// with 1 active LObject per worker" guidance. Follow-up
 /// (`ark_gb-perf`) can add pipeline-depth > 1.
-pub fn reduce_lobject_parallel<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    lobj: &mut LObject<F, M>,
-    comp: &Computation<F, M>,
+pub fn reduce_lobject_parallel<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    lobj: &mut LObject<F, M, W>,
+    comp: &Computation<F, M, W>,
 ) {
     loop {
         if lobj.is_zero() {
@@ -302,7 +304,7 @@ pub fn reduce_lobject_parallel<F: Field + Copy + Send + Sync, M: Monomial<F> + F
         let lm_coeff = lobj.lm_coeff();
         let lm = *lobj.leading().expect("non-zero lobject has leading").1;
 
-        let divisor: Option<(Arc<Poly<F, M>>, u32)> = {
+        let divisor: Option<(Arc<Poly<F, M, W>>, u32)> = {
             let snap = comp.basis.read_snapshot();
             let sevs = &snap.sevs;
             let polys = &snap.polys;
@@ -310,7 +312,7 @@ pub fn reduce_lobject_parallel<F: Field + Copy + Send + Sync, M: Monomial<F> + F
             // Redundancy flags are atomic; read them in-line.
             let redundant = comp.basis.redundant.read().unwrap();
 
-            let mut found: Option<(Arc<Poly<F, M>>, u32)> = None;
+            let mut found: Option<(Arc<Poly<F, M, W>>, u32)> = None;
             for idx in 0..polys.len() {
                 if redundant[idx].load(Ordering::Relaxed) {
                     continue;
@@ -374,9 +376,9 @@ pub fn reduce_lobject_parallel<F: Field + Copy + Send + Sync, M: Monomial<F> + F
 /// common case (no new divisors arrived) this is one scan and no
 /// reduction; in the rare case (a `1` got inserted during our
 /// reduction), we reduce `h` to zero and bail out.
-pub fn insert_and_enterpairs<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    comp: &Computation<F, M>,
-    h: Poly<F, M>,
+pub fn insert_and_enterpairs<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    comp: &Computation<F, M, W>,
+    h: Poly<F, M, W>,
     h_sugar: u32,
 ) {
     // Hold the insert mutex for the full critical section:
@@ -415,7 +417,7 @@ pub fn insert_and_enterpairs<F: Field + Copy + Send + Sync, M: Monomial<F> + Fro
     let basis_len;
     let sevs_snapshot: Vec<u64>;
     let lm_degs_snapshot: Vec<u32>;
-    let polys_snapshot: Vec<Arc<Poly<F, M>>>;
+    let polys_snapshot: Vec<Arc<Poly<F, M, W>>>;
     let redundant_snapshot: Vec<bool>;
     {
         let snap = comp.basis.read_snapshot();
@@ -511,11 +513,11 @@ pub fn insert_and_enterpairs<F: Field + Copy + Send + Sync, M: Monomial<F> + Fro
 /// [`insert_and_enterpairs`] for why it exists. It runs single-
 /// threaded (caller holds `insert_mutex`), so it can safely use the
 /// Poly-owning reducer rather than building a new bucket.
-fn reduce_survivor_final<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    comp: &Computation<F, M>,
-    h: Poly<F, M>,
+fn reduce_survivor_final<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    comp: &Computation<F, M, W>,
+    h: Poly<F, M, W>,
     h_sugar: u32,
-) -> Option<(Poly<F, M>, u32)> {
+) -> Option<(Poly<F, M, W>, u32)> {
     let sugar = h_sugar;
     // Reuse the existing parallel reducer — it already takes a
     // snapshot per iteration, which is the behaviour we want.
@@ -535,18 +537,18 @@ fn reduce_survivor_final<F: Field + Copy + Send + Sync, M: Monomial<F> + From<Mo
 /// Build one candidate pair `(s_idx, h_idx)`. Returns `None` if the
 /// product criterion prunes it.
 #[allow(clippy::too_many_arguments)]
-fn build_pair<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    ring: &Ring<F>,
+fn build_pair<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    ring: &Ring<F, W>,
     s_idx: u32,
     h_idx: u32,
     sevs: &[u64],
     lm_degs: &[u32],
-    polys: &[Arc<Poly<F, M>>],
-    h_lm: &MonoTerm,
+    polys: &[Arc<Poly<F, M, W>>],
+    h_lm: &MonoTerm<W>,
     h_lm_sev: u64,
     h_sugar: u32,
     arrival: u64,
-) -> Option<Pair> {
+) -> Option<Pair<W>> {
     let s_lm_sev = sevs[s_idx as usize];
     // Product criterion (sev-level): coprime ⇒ prune.
     if (h_lm_sev & s_lm_sev) == 0 {
@@ -571,10 +573,10 @@ fn build_pair<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
     Some(Pair::new(s_idx, h_idx, lcm, sugar, arrival))
 }
 
-fn monomials_are_coprime<F: Field + Copy + Send + Sync>(
-    a: &MonoTerm,
-    b: &MonoTerm,
-    ring: &Ring<F>,
+fn monomials_are_coprime<F: Field + Copy + Send + Sync, const W: usize>(
+    a: &MonoTerm<W>,
+    b: &MonoTerm<W>,
+    ring: &Ring<F, W>,
 ) -> bool {
     let n = ring.nvars();
     for i in 0..n {
@@ -591,7 +593,7 @@ fn monomials_are_coprime<F: Field + Copy + Send + Sync>(
 /// another pair's LCM. Equal LCMs keep the first (lowest index in
 /// B); later duplicates drop. Matches `gm::chain_crit_normal`
 /// phase 1.
-fn chain_crit_b_internal<F: Field + Copy + Send + Sync>(ring: &Ring<F>, b: &mut BSet) {
+fn chain_crit_b_internal<F: Field + Copy + Send + Sync, const W: usize>(ring: &Ring<F, W>, b: &mut BSet<W>) {
     let n = b.len();
     let mut kill: Vec<bool> = vec![false; n];
     {
@@ -633,13 +635,13 @@ fn chain_crit_b_internal<F: Field + Copy + Send + Sync>(ring: &Ring<F>, b: &mut 
 /// Takes a mutable borrow on `L` (the caller holds the lock). Does
 /// all look-ups against the snapshot passed in, not the live basis —
 /// so this function is deterministic given its inputs.
-fn chain_crit_l_side<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    ring: &Ring<F>,
-    polys_snapshot: &[Arc<Poly<F, M>>],
-    h_lm: &MonoTerm,
+fn chain_crit_l_side<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    ring: &Ring<F, W>,
+    polys_snapshot: &[Arc<Poly<F, M, W>>],
+    h_lm: &MonoTerm<W>,
     h_lm_sev: u64,
     h_idx: u32,
-    l: &mut LSet,
+    l: &mut LSet<W>,
 ) {
     let mut to_drop: Vec<(u32, u32)> = Vec::new();
     for pair in l.iter_live() {
@@ -687,9 +689,9 @@ fn chain_crit_l_side<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTe
 
 /// Tail-reduce every non-redundant basis element against the others,
 /// then return the canonically-sorted list of survivors.
-fn finalise_basis<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    comp: &Computation<F, M>,
-) -> Vec<Poly<F, M>> {
+fn finalise_basis<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    comp: &Computation<F, M, W>,
+) -> Vec<Poly<F, M, W>> {
     // We're now single-threaded (all workers joined), so we can
     // move the polys out of the SharedSBasis. Take write locks and
     // extract the inner arrays.
@@ -707,7 +709,7 @@ fn finalise_basis<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>
     // Extract owned polynomials. Each `Arc<Poly>` should have
     // refcount 1 by this point (no worker holds a clone), so
     // `Arc::try_unwrap` works cheaply.
-    let mut polys: Vec<Poly<F, M>> = Vec::with_capacity(n);
+    let mut polys: Vec<Poly<F, M, W>> = Vec::with_capacity(n);
     for arc in inner.polys.drain(..) {
         match Arc::try_unwrap(arc) {
             Ok(p) => polys.push(p),
@@ -732,7 +734,7 @@ fn finalise_basis<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>
     tail_reduce_all(&mut polys, &mut redundant_vec, &comp.ring);
 
     // Extract surviving polys and sort canonically.
-    let mut out: Vec<Poly<F, M>> = polys
+    let mut out: Vec<Poly<F, M, W>> = polys
         .into_iter()
         .enumerate()
         .filter_map(|(i, p)| if redundant_vec[i] { None } else { Some(p) })
@@ -749,10 +751,10 @@ fn finalise_basis<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>
 /// runs single-threaded after all workers have joined; no locking
 /// is needed. Logic matches `bba::tail_reduce_all` on the serial
 /// SBasis but operates on `Vec<Poly>` + `Vec<bool>` directly.
-fn tail_reduce_all<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    polys: &mut [Poly<F, M>],
+fn tail_reduce_all<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    polys: &mut [Poly<F, M, W>],
     redundant: &mut [bool],
-    ring: &Arc<Ring<F>>,
+    ring: &Arc<Ring<F, W>>,
 ) {
     let n = polys.len();
     for i in 0..n {
@@ -782,12 +784,12 @@ fn tail_reduce_all<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm
     }
 }
 
-fn reduce_tail<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-    tail: Poly<F, M>,
-    polys: &[Poly<F, M>],
+fn reduce_tail<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    tail: Poly<F, M, W>,
+    polys: &[Poly<F, M, W>],
     redundant: &[bool],
-    ring: &Arc<Ring<F>>,
-) -> Poly<F, M> {
+    ring: &Arc<Ring<F, W>>,
+) -> Poly<F, M, W> {
     if tail.is_zero() {
         return tail;
     }
@@ -846,12 +848,12 @@ fn reduce_tail<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
     }
 }
 
-fn prepend_leading<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
+fn prepend_leading<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
     lc: F,
     lm: &M,
-    tail: Poly<F, M>,
-    ring: &Ring<F>,
-) -> Poly<F, M> {
+    tail: Poly<F, M, W>,
+    ring: &Ring<F, W>,
+) -> Poly<F, M, W> {
     let mut terms: Vec<(F, M)> = Vec::with_capacity(tail.len() + 1);
     terms.push((lc, *lm));
     for (c, m) in tail.iter() {
@@ -878,8 +880,8 @@ impl CancelHandle {
     }
 
     /// Construct a handle from a `Computation`'s internal flag.
-    pub fn from_computation<F: Field + Copy + Send + Sync, M: Monomial<F> + From<MonoTerm>>(
-        comp: &Computation<F, M>,
+    pub fn from_computation<F: Field + Copy + Send + Sync, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+        comp: &Computation<F, M, W>,
     ) -> Self {
         Self {
             flag: Arc::clone(&comp.cancel),
@@ -905,7 +907,7 @@ mod tests {
     #[test]
     fn empty_input_gives_empty_gb_parallel() {
         let r = mk_ring(3);
-        let gb = compute_gb_parallel::<Fr, GrevLexTerm>(Arc::clone(&r), vec![], 2).unwrap();
+        let gb = compute_gb_parallel::<Fr, GrevLexTerm, 4>(Arc::clone(&r), vec![], 2).unwrap();
         assert!(gb.is_empty());
     }
 

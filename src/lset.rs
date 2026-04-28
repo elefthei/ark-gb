@@ -38,23 +38,23 @@ use crate::pair::{Pair, PairKey};
 /// control in practice — arrival is monotonic — but the tie-break
 /// keeps `HashSet::remove` semantics unambiguous).
 #[derive(Clone, Debug)]
-struct HeapEntry {
-    pair: Pair,
+struct HeapEntry<const W: usize> {
+    pair: Pair<W>,
     key: PairKey,
 }
 
-impl PartialEq for HeapEntry {
+impl<const W: usize> PartialEq for HeapEntry<W> {
     fn eq(&self, other: &Self) -> bool {
         self.key == other.key && self.pair == other.pair
     }
 }
-impl Eq for HeapEntry {}
-impl Ord for HeapEntry {
+impl<const W: usize> Eq for HeapEntry<W> {}
+impl<const W: usize> Ord for HeapEntry<W> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.pair.cmp(&other.pair).then(self.key.cmp(&other.key))
     }
 }
-impl PartialOrd for HeapEntry {
+impl<const W: usize> PartialOrd for HeapEntry<W> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
@@ -66,15 +66,15 @@ impl PartialOrd for HeapEntry {
 /// oldest-arrival pair, or skip it if it was deleted". The deleted-
 /// pair book-keeping is hidden; `len` returns the live count.
 #[derive(Debug, Default)]
-pub struct LSet {
-    heap: BinaryHeap<Reverse<HeapEntry>>,
+pub struct LSet<const W: usize = 4> {
+    heap: BinaryHeap<Reverse<HeapEntry<W>>>,
     deleted: HashSet<PairKey>,
     by_indices: HashMap<(u32, u32), PairKey>,
     next_key: u64,
     live: usize,
 }
 
-impl LSet {
+impl<const W: usize> LSet<W> {
     /// Empty queue.
     pub fn new() -> Self {
         Self {
@@ -103,7 +103,7 @@ impl LSet {
     /// pair per index pair. The freshly-inserted pair's key is
     /// stamped into the returned [`PairKey`], and into the pair's
     /// own `key` field (the `pair` argument is consumed).
-    pub fn insert(&mut self, mut pair: Pair) -> PairKey {
+    pub fn insert(&mut self, mut pair: Pair<W>) -> PairKey {
         let key = PairKey(self.next_key);
         self.next_key += 1;
         pair.key = key;
@@ -131,7 +131,7 @@ impl LSet {
     ///
     /// Tombstoned entries are skipped (and their tombstones consumed
     /// on the way through).
-    pub fn pop(&mut self) -> Option<Pair> {
+    pub fn pop(&mut self) -> Option<Pair<W>> {
         while let Some(Reverse(entry)) = self.heap.pop() {
             if self.deleted.remove(&entry.key) {
                 continue;
@@ -178,7 +178,7 @@ impl LSet {
 
     /// Iterate live pairs in undefined order. Useful for diagnostics
     /// and testing only; not a hot path.
-    pub fn iter_live(&self) -> impl Iterator<Item = &Pair> + '_ {
+    pub fn iter_live(&self) -> impl Iterator<Item = &Pair<W>> + '_ {
         self.heap.iter().filter_map(|Reverse(entry)| {
             if self.deleted.contains(&entry.key) {
                 None
@@ -191,7 +191,7 @@ impl LSet {
     /// Debug-only invariant check.
     pub fn assert_canonical<F: ark_ff::Field + Copy + Send + Sync>(
         &self,
-        ring: &crate::ring::Ring<F>,
+        ring: &crate::ring::Ring<F, W>,
     ) {
         // Every live pair in the heap has a matching by_indices entry.
         // The by_indices hashes are all live (not deleted).

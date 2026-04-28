@@ -29,9 +29,9 @@ use crate::ring::Ring;
 /// single-owner). A later parallel driver passes `LObject`s between
 /// workers by move.
 #[derive(Debug)]
-pub struct LObject<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> {
+pub struct LObject<F: Field + Copy, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize = 4> {
     /// The geobucket accumulator.
-    bucket: KBucket<F, M>,
+    bucket: KBucket<F, M, W>,
     /// Cached leading sev. 0 when the LObject is zero.
     lm_sev: u64,
     /// Cached leading coeff. 0 when zero.
@@ -44,17 +44,17 @@ pub struct LObject<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> {
     sugar: u32,
 }
 
-impl<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> LObject<F, M> {
+impl<F: Field + Copy, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize> LObject<F, M, W> {
     /// Build an `LObject` from an existing `Poly` with sugar seeded
     /// from the poly's leading total degree.
-    pub fn from_poly(ring: Arc<Ring<F>>, p: Poly<F, M>) -> Self {
+    pub fn from_poly(ring: Arc<Ring<F, W>>, p: Poly<F, M, W>) -> Self {
         let sugar = p.lm_deg();
         Self::from_poly_with_sugar(ring, p, sugar)
     }
 
     /// Build an `LObject` from an existing `Poly` with an explicit
     /// sugar value.
-    pub fn from_poly_with_sugar(ring: Arc<Ring<F>>, p: Poly<F, M>, sugar: u32) -> Self {
+    pub fn from_poly_with_sugar(ring: Arc<Ring<F, W>>, p: Poly<F, M, W>, sugar: u32) -> Self {
         let mut o = Self {
             bucket: KBucket::from_poly(ring, p),
             lm_sev: 0,
@@ -80,10 +80,10 @@ impl<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> LObject<F, M> {
     /// returned; the caller is responsible for running divisor
     /// reductions on it.
     pub fn from_spoly(
-        ring: Arc<Ring<F>>,
-        s_i: &Poly<F, M>,
-        s_j: &Poly<F, M>,
-        pair: &Pair,
+        ring: Arc<Ring<F, W>>,
+        s_i: &Poly<F, M, W>,
+        s_j: &Poly<F, M, W>,
+        pair: &Pair<W>,
     ) -> Option<Self> {
         debug_assert!(!s_i.is_zero() && !s_j.is_zero());
         let (_, lm_i) = s_i.leading()?;
@@ -183,13 +183,13 @@ impl<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> LObject<F, M> {
 
     /// Mutable access to the underlying bucket for reduction steps.
     #[inline]
-    pub fn bucket_mut(&mut self) -> &mut KBucket<F, M> {
+    pub fn bucket_mut(&mut self) -> &mut KBucket<F, M, W> {
         &mut self.bucket
     }
 
     /// Borrow the underlying ring (via the bucket).
     #[inline]
-    pub fn ring(&self) -> &Arc<Ring<F>> {
+    pub fn ring(&self) -> &Arc<Ring<F, W>> {
         self.bucket.ring()
     }
 
@@ -213,7 +213,7 @@ impl<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> LObject<F, M> {
     }
 
     /// Finalise: consume the LObject and return its polynomial value.
-    pub fn into_poly(self) -> Poly<F, M> {
+    pub fn into_poly(self) -> Poly<F, M, W> {
         self.bucket.into_poly()
     }
 

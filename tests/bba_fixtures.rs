@@ -169,7 +169,7 @@ impl<'a> LineParser<'a> {
         Some((sign, coeff, exps))
     }
 
-    fn parse(mut self) -> Poly<Fr> {
+    fn parse(mut self) -> Poly<Fr, GrevLexTerm> {
         let mut terms: Vec<(Fr, GrevLexTerm)> = Vec::new();
         let mut first = true;
         loop {
@@ -202,7 +202,7 @@ fn mono(r: &Ring<Fr>, e: &[u32]) -> GrevLexTerm {
 
 /// Run `compute_gb` and validate the output via Buchberger's criterion.
 /// Panics on validation failure with the first witness of incorrectness.
-fn validate_gb(name: &str, ring: &Arc<Ring<Fr>>, input: Vec<Poly<Fr>>) -> Vec<Poly<Fr>> {
+fn validate_gb(name: &str, ring: &Arc<Ring<Fr>>, input: Vec<Poly<Fr, GrevLexTerm>>) -> Vec<Poly<Fr, GrevLexTerm>> {
     let gb = compute_gb(Arc::clone(ring), input.clone());
     assert!(
         !gb.is_empty(),

@@ -24,7 +24,7 @@
 //!
 //! Because [`is_groebner_basis`] reuses the same reducer that
 //! [`compute_gb`](crate::bba::compute_gb) uses internally, a bug in
-//! the reducer could let a wrong GB validate as correct. Pair this
+//! the reducer could let a wrong GB validate as correct. Pair<W> this
 //! validator with hand-checkable closed-form sanity tests (see
 //! `tests/gb_sanity.rs`) for full coverage.
 
@@ -41,7 +41,7 @@ use crate::sbasis::SBasis;
 
 /// Failure mode reported by [`is_groebner_basis`].
 #[derive(Debug)]
-pub enum GbError<F: Field + Copy + Send + Sync + 'static, M: Monomial<F>> {
+pub enum GbError<F: Field + Copy + Send + Sync + 'static, M: Monomial<F, W>, const W: usize> {
     /// Input generator at index `idx` did not reduce to zero modulo
     /// the candidate GB. The non-zero residue is included for
     /// diagnostics.
@@ -49,7 +49,7 @@ pub enum GbError<F: Field + Copy + Send + Sync + 'static, M: Monomial<F>> {
         /// Index of the offending input polynomial.
         idx: usize,
         /// The non-zero residue of `inputs[idx]` after reduction.
-        residue: Poly<F, M>,
+        residue: Poly<F, M, W>,
     },
     /// The S-polynomial of `(gb[i], gb[j])` (with `i < j`) did not
     /// reduce to zero modulo the candidate GB.
@@ -59,7 +59,7 @@ pub enum GbError<F: Field + Copy + Send + Sync + 'static, M: Monomial<F>> {
         /// Second index in the offending pair.
         j: usize,
         /// The non-zero residue of `S(gb[i], gb[j])` after reduction.
-        residue: Poly<F, M>,
+        residue: Poly<F, M, W>,
     },
 }
 
@@ -67,10 +67,10 @@ pub enum GbError<F: Field + Copy + Send + Sync + 'static, M: Monomial<F>> {
 /// inserted in input order; each insert triggers
 /// [`SBasis::clear_redundant_for`], which is a no-op for a properly
 /// reduced GB but keeps the contract the reducer relies on.
-fn build_sbasis<F: Field + Copy + Send + Sync + 'static, M: Monomial<F> + From<MonoTerm>>(
-    ring: &Ring<F>,
-    basis: &[Poly<F, M>],
-) -> SBasis<F, M> {
+fn build_sbasis<F: Field + Copy + Send + Sync + 'static, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    ring: &Ring<F, W>,
+    basis: &[Poly<F, M, W>],
+) -> SBasis<F, M, W> {
     let mut sb = SBasis::new();
     for p in basis {
         if p.is_zero() {
@@ -92,11 +92,11 @@ fn build_sbasis<F: Field + Copy + Send + Sync + 'static, M: Monomial<F> + From<M
 /// The basis is treated as a set of generators and is internally
 /// re-wrapped in an [`SBasis`]; pass the output of
 /// [`compute_gb`](crate::bba::compute_gb) directly.
-pub fn normal_form<F: Field + Copy + Send + Sync + 'static, M: Monomial<F> + From<MonoTerm>>(
-    ring: &Arc<Ring<F>>,
-    f: &Poly<F, M>,
-    basis: &[Poly<F, M>],
-) -> Poly<F, M> {
+pub fn normal_form<F: Field + Copy + Send + Sync + 'static, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize>(
+    ring: &Arc<Ring<F, W>>,
+    f: &Poly<F, M, W>,
+    basis: &[Poly<F, M, W>],
+) -> Poly<F, M, W> {
     if f.is_zero() {
         return f.clone();
     }
@@ -120,12 +120,13 @@ pub fn normal_form<F: Field + Copy + Send + Sync + 'static, M: Monomial<F> + Fro
 /// regression check.
 pub fn is_groebner_basis<
     F: Field + Copy + Send + Sync + 'static,
-    M: Monomial<F> + From<MonoTerm>,
+    M: Monomial<F, W> + From<MonoTerm<W>>,
+    const W: usize,
 >(
-    ring: &Arc<Ring<F>>,
-    input: &[Poly<F, M>],
-    gb: &[Poly<F, M>],
-) -> Result<(), GbError<F, M>> {
+    ring: &Arc<Ring<F, W>>,
+    input: &[Poly<F, M, W>],
+    gb: &[Poly<F, M, W>],
+) -> Result<(), GbError<F, M, W>> {
     let s_basis = build_sbasis(ring, gb);
 
     // (1) input ⊆ ⟨gb⟩.
@@ -177,7 +178,7 @@ pub fn is_groebner_basis<
             if (sev_i & lm_j.sev()) == 0 {
                 continue;
             }
-            // Build a placeholder Pair carrying the lcm of the two
+            // Build a placeholder Pair<W> carrying the lcm of the two
             // leading monomials; sugar/arrival are not consulted by
             // the reduction path.
             let lcm = lm_i.as_mono_term().lcm(lm_j.as_mono_term(), ring);

@@ -13,34 +13,48 @@ pub const BITS_PER_VAR: u8 = 8;
 /// Maximum value a single variable's exponent may take.
 pub const MAX_VAR_EXP: u32 = 0x7F;
 
-/// Maximum number of variables supported by the 8-bit packing.
-pub const MAX_VARS: u32 = 31;
+/// Maximum number of variables supported by the default 4-word packing
+/// (W = 4 in the const-generic [`Ring<F, W>`]).
+///
+/// Equals `max_vars::<4>() = 31`. Higher `W` parameters lift this cap
+/// proportionally: `max_vars::<W>() = W * 8 - 1`.
+pub const MAX_VARS: u32 = max_vars::<4>();
+
+/// Maximum number of variables supported at compile-time const-generic
+/// width `W` (in u64 words). Each `u64` packs 8 single-byte exponents,
+/// minus 1 byte reserved for the cached total-degree → `W * 8 - 1`.
+#[inline]
+pub const fn max_vars<const W: usize>() -> u32 {
+    (W * 8 - 1) as u32
+}
 
 /// An immutable polynomial ring.
 ///
-/// Construct via [`Ring::new`]. Share via `Arc<Ring>`. Never mutated
-/// after construction; every method takes `&self`.
+/// Const-generic on `W`: the number of `u64` words used to pack each
+/// monomial (default 4 → 32 bytes, 31 vars + 1 cap byte). Construct via
+/// [`Ring::new`]. Share via `Arc<Ring>`. Never mutated after
+/// construction; every method takes `&self`.
 #[derive(Debug, Clone)]
-pub struct Ring<F: Field + Copy + Send + Sync> {
-    /// Number of variables. `1 ≤ nvars ≤ MAX_VARS`.
+pub struct Ring<F: Field + Copy + Send + Sync, const W: usize = 4> {
+    /// Number of variables. `1 ≤ nvars ≤ max_vars::<W>()`.
     nvars: u32,
     /// Per-word overflow guard mask.
-    overflow_mask: [u64; 4],
+    overflow_mask: [u64; W],
     /// Per-word XOR mask used to flip the degrevlex tie-break direction.
-    cmp_flip_mask: [u64; 4],
+    cmp_flip_mask: [u64; W],
     /// Phantom data for the coefficient field type.
     _marker: PhantomData<F>,
 }
 
-impl<F: Field + Copy + Send + Sync> Ring<F> {
+impl<F: Field + Copy + Send + Sync, const W: usize> Ring<F, W> {
     /// Construct a new ring.
     ///
-    /// Returns `None` if `nvars` is out of range (`0` or `> MAX_VARS`).
+    /// Returns `None` if `nvars` is out of range (`0` or `> max_vars::<W>()`).
     pub fn new(nvars: u32) -> Option<Self> {
-        if nvars == 0 || nvars > MAX_VARS {
+        if nvars == 0 || nvars > max_vars::<W>() {
             return None;
         }
-        let (overflow_mask, cmp_flip_mask) = compute_packing_masks(nvars);
+        let (overflow_mask, cmp_flip_mask) = compute_packing_masks::<W>(nvars);
         Some(Self {
             nvars,
             overflow_mask,
@@ -57,32 +71,32 @@ impl<F: Field + Copy + Send + Sync> Ring<F> {
 
     /// Per-word overflow guard mask.
     #[inline]
-    pub fn overflow_mask(&self) -> &[u64; 4] {
+    pub fn overflow_mask(&self) -> &[u64; W] {
         &self.overflow_mask
     }
 
     /// Per-word degrevlex compare flip mask.
     #[inline]
-    pub fn cmp_flip_mask(&self) -> &[u64; 4] {
+    pub fn cmp_flip_mask(&self) -> &[u64; W] {
         &self.cmp_flip_mask
     }
 }
 
-impl<F: Field + Copy + Send + Sync> PartialEq for Ring<F> {
+impl<F: Field + Copy + Send + Sync, const W: usize> PartialEq for Ring<F, W> {
     fn eq(&self, other: &Self) -> bool {
         self.nvars == other.nvars
     }
 }
-impl<F: Field + Copy + Send + Sync> Eq for Ring<F> {}
+impl<F: Field + Copy + Send + Sync, const W: usize> Eq for Ring<F, W> {}
 
 /// Compute the packing masks for a ring with the given number of
-/// variables.
-fn compute_packing_masks(nvars: u32) -> ([u64; 4], [u64; 4]) {
+/// variables, parameterised by word-width `W`.
+fn compute_packing_masks<const W: usize>(nvars: u32) -> ([u64; W], [u64; W]) {
     let n = nvars as usize;
-    let mut overflow = [0u64; 4];
-    let mut flip = [0u64; 4];
-    let first_var_byte = 31 - n;
-    let last_var_byte = 30;
+    let mut overflow = [0u64; W];
+    let mut flip = [0u64; W];
+    let first_var_byte = (W * 8 - 1) - n;
+    let last_var_byte = W * 8 - 2;
     for byte_idx in first_var_byte..=last_var_byte {
         let word = byte_idx / 8;
         let shift = ((byte_idx % 8) * 8) as u32;

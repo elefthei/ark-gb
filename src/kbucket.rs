@@ -133,13 +133,13 @@ fn slot_capacity(i: usize) -> usize {
 /// is legal (the bba driver will do so when stealing work), but
 /// shared access is not.
 #[derive(Debug)]
-pub struct KBucket<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> {
+pub struct KBucket<F: Field + Copy, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize = 4> {
     /// Ring context. Shared via `Arc` so the bucket can outlive the
     /// scope in which it was created without copying ring state.
-    ring: Arc<Ring<F>>,
+    ring: Arc<Ring<F, W>>,
     /// Exponentially-sized slots; `slots[i]` holds polys of length
     /// `≤ 4^i`. `None` means the slot is empty.
-    slots: [Option<Poly<F, M>>; NUM_SLOTS],
+    slots: [Option<Poly<F, M, W>>; NUM_SLOTS],
     /// Cached leading term: `(coeff, monomial, slot_index)`. The
     /// `slot_index` is which slot currently owns the leading term.
     lm_cache: Option<(F, M, usize)>,
@@ -151,11 +151,11 @@ pub struct KBucket<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> {
     _not_sync: std::marker::PhantomData<std::cell::Cell<()>>,
 }
 
-impl<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> KBucket<F, M> {
+impl<F: Field + Copy, M: Monomial<F, W> + From<MonoTerm<W>>, const W: usize> KBucket<F, M, W> {
     // ----- Constructors -----
 
     /// Empty bucket.
-    pub fn new(ring: Arc<Ring<F>>) -> Self {
+    pub fn new(ring: Arc<Ring<F, W>>) -> Self {
         Self {
             ring,
             slots: std::array::from_fn(|_| None),
@@ -167,7 +167,7 @@ impl<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> KBucket<F, M> {
 
     /// Seed the bucket from a polynomial. The polynomial is consumed
     /// and placed in whichever slot its length selects.
-    pub fn from_poly(ring: Arc<Ring<F>>, p: Poly<F, M>) -> Self {
+    pub fn from_poly(ring: Arc<Ring<F, W>>, p: Poly<F, M, W>) -> Self {
         let mut b = Self::new(ring);
         if !p.is_zero() {
             let i = slot_for_len(p.len());
@@ -182,7 +182,7 @@ impl<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> KBucket<F, M> {
 
     /// The ring this bucket lives in.
     #[inline]
-    pub fn ring(&self) -> &Arc<Ring<F>> {
+    pub fn ring(&self) -> &Arc<Ring<F, W>> {
         &self.ring
     }
 
@@ -217,7 +217,7 @@ impl<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> KBucket<F, M> {
     ///
     /// Precondition: `q` is already canonical (matches `Poly`
     /// invariants) and nonzero.
-    fn absorb(&mut self, mut q: Poly<F, M>) {
+    fn absorb(&mut self, mut q: Poly<F, M, W>) {
         debug_assert!(!q.is_zero());
         let mut i = slot_for_len(q.len());
         debug_assert!(i < NUM_SLOTS, "slot overflow: len = {}", q.len());
@@ -282,7 +282,7 @@ impl<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> KBucket<F, M> {
     /// via `debug_assert!` inside `MonoTerm::mul`; release builds
     /// silently corrupt the monomial (matching Singular's
     /// `p_ExpVectorAdd` release-mode contract).
-    pub fn minus_m_mult_p(&mut self, m: &M, c: F, p: &Poly<F, M>) {
+    pub fn minus_m_mult_p(&mut self, m: &M, c: F, p: &Poly<F, M, W>) {
         if c.is_zero() || p.is_zero() {
             return;
         }
@@ -478,7 +478,7 @@ impl<F: Field + Copy, M: Monomial<F> + From<MonoTerm>> KBucket<F, M> {
 
     /// Consume the bucket and return the canonical sum as a single
     /// [`Poly`].
-    pub fn into_poly(self) -> Poly<F, M> {
+    pub fn into_poly(self) -> Poly<F, M, W> {
         let KBucket { ring, slots, .. } = self;
         let mut acc = Poly::zero();
         for s in slots.into_iter().flatten() {
